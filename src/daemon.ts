@@ -29,12 +29,13 @@ interface SessionRecord {
   bot?: Bot;
   events: SessionEvent[];
   nextEventSequence: number;
+  pendingTransfer?: { host: string; port: number };
 }
 
 const args = process.argv.slice(2);
 const workspaceArg = readFlag(args, "--workspace") ?? process.cwd();
-const workspace = path.resolve(workspaceArg);
-const paths = getPaths(workspace);
+const paths = getPaths(workspaceArg);
+const workspace = paths.workspace;
 ensureBaseDirs(paths);
 
 const sessions = new Map<string, SessionRecord>();
@@ -343,6 +344,22 @@ function attachBotEvents(record: SessionRecord, bot: Bot) {
     record.connecting = false;
     addEvent(record, "spawn", "Spawn event received.");
   });
+  bot.on("respawn", () => {
+    addEvent(record, "server_transition", "Respawn or proxy backend transition received.", gameConnectionSummary(bot));
+  });
+  bot.on("game", () => {
+    addEvent(record, "game_change", "Server game properties changed.", gameConnectionSummary(bot));
+  });
+  bot._client?.on?.("transfer", (packet: any) => {
+    try {
+      const target = { host: normalizeHost(String(packet?.host ?? "")), port: normalizePort(Number(packet?.port)) };
+      record.pendingTransfer = target;
+      addEvent(record, "server_transfer_requested", `Server requested transfer to ${target.host}:${target.port}.`, target);
+      bot._client.end();
+    } catch (error) {
+      addEvent(record, "server_transfer_failed", error instanceof Error ? error.message : String(error), simplifyUnknown(packet, 3));
+    }
+  });
   bot.on("message", (message: any, position: unknown, _jsonMessage: unknown, sender: unknown, verified: unknown) => {
     const component = chatComponentSummary(message);
     const details = {
@@ -460,15 +477,28 @@ function attachBotEvents(record: SessionRecord, bot: Bot) {
     addEvent(record, "error", error instanceof Error ? error.message : String(error));
   });
   bot.on("end", (reason: unknown) => {
+    const transfer = record.pendingTransfer;
+    record.pendingTransfer = undefined;
     record.connected = false;
     record.connecting = false;
     record.bot = undefined;
     addEvent(record, "disconnect", "Disconnected.", reason);
+    if (transfer && sessions.has(record.name)) {
+      record.host = transfer.host;
+      record.port = transfer.port;
+      setTimeout(() => {
+        if (!sessions.has(record.name) || record.connected || record.connecting) return;
+        connectSession(record.name, 60_000, transfer).catch((error) => {
+          addEvent(record, "server_transfer_failed", error instanceof Error ? error.message : String(error), transfer);
+        });
+      }, 500);
+    }
   });
 }
 
 async function disconnectSession(name: string, timeoutMs = 20_000) {
   const record = requireSession(name);
+  record.pendingTransfer = undefined;
   if (!record.bot) {
     record.connected = false;
     return snapshotSession(record);
@@ -529,7 +559,15 @@ function sessionStatePart(snapshot: SessionSnapshot, part: string) {
       selectedSlot: snapshot.selectedSlot,
       heldItem: snapshot.heldItem
     },
-    inventory: { name: snapshot.name, inventory: snapshot.inventory ?? [], heldItem: snapshot.heldItem },
+    inventory: {
+      name: snapshot.name,
+      inventory: snapshot.inventory ?? [],
+      slots: snapshot.inventorySlots ?? [],
+      slotCount: snapshot.inventorySlotCount ?? 0,
+      hash: snapshot.inventoryHash,
+      selectedSlot: snapshot.selectedSlot,
+      heldItem: snapshot.heldItem
+    },
     entities: { name: snapshot.name, nearbyEntities: snapshot.nearbyEntities ?? [], nearbyPlayers: snapshot.nearbyPlayers ?? [] },
     window: { name: snapshot.name, openWindow: snapshot.openWindow ?? null },
     ui: {
@@ -1195,6 +1233,7 @@ function expectationOptions(options: any) {
     types,
     contains,
     caseSensitive: Boolean(options.caseSensitive),
+    afterSequence: normalizeEventSequence(options.afterSequence),
     timeoutTicks: normalizeTimeoutTicks(options.timeoutTicks ?? options.timeout ?? 0)
   };
 }
@@ -1273,7 +1312,8 @@ async function waitForExpectation(record: SessionRecord, timeoutTicks: number, e
 
 function matchEventExpectation(record: SessionRecord, expected: any) {
   const events = record.events.slice().reverse();
-  const filtered = expected.types.length > 0 ? events.filter((event) => expected.types.includes(event.type)) : events;
+  const afterFiltered = expected.afterSequence === undefined ? events : events.filter(event => event.sequence > expected.afterSequence);
+  const filtered = expected.types.length > 0 ? afterFiltered.filter((event) => expected.types.includes(event.type)) : afterFiltered;
   const match = filtered.find((event) => {
     const text = eventSearchText(event);
     return expected.contains.every((needle: string) => textContains(text, needle, expected.caseSensitive));
@@ -1290,6 +1330,22 @@ function matchEventExpectation(record: SessionRecord, expected: any) {
     reason: "No recent session event matched the expectation.",
     expected,
     actual: filtered.slice(0, 20)
+  };
+}
+
+function normalizeEventSequence(value: unknown) {
+  if (value === undefined || value === null || value === "") return undefined;
+  const sequence = Number(value);
+  if (!Number.isInteger(sequence) || sequence < 0) throw new MinecraftCliError("INVALID_EVENT_SEQUENCE", "Event sequence must be a non-negative integer.");
+  return sequence;
+}
+
+function gameConnectionSummary(bot: Bot) {
+  return {
+    dimension: bot?.game?.dimension,
+    gameMode: bot?.game?.gameMode,
+    serverBrand: bot?.game?.serverBrand,
+    position: vectorSummary(bot?.entity?.position)
   };
 }
 
@@ -1547,7 +1603,13 @@ function snapshotSession(record: SessionRecord): SessionSnapshot {
   const bot = record.bot;
   const position = bot?.entity?.position;
   const heldItem = bot?.heldItem ? itemSummary(bot.heldItem) : undefined;
-  const inventory = bot?.inventory?.items?.()?.map(itemSummary) ?? undefined;
+  const inventorySlots = Array.isArray(bot?.inventory?.slots)
+    ? bot.inventory.slots.map((item: any, slot: number) => item ? { slot, ...itemSummary(item) } : null)
+    : undefined;
+  const inventory = inventorySlots?.filter(Boolean) ?? undefined;
+  const inventoryHash = inventorySlots
+    ? crypto.createHash("sha256").update(JSON.stringify(inventorySlots)).digest("hex")
+    : undefined;
   const openWindow = bot?.currentWindow ? windowSummary(bot.currentWindow) : undefined;
   const bossBars = bot?.bossBars ? Object.values(bot.bossBars).map(bossBarSummary) : undefined;
   const scoreboards = bot?.scoreboards ? Object.values(bot.scoreboards).map(scoreboardSummary) : undefined;
@@ -1561,6 +1623,7 @@ function snapshotSession(record: SessionRecord): SessionSnapshot {
           name: entity.name,
           type: entity.type,
           username: entity.username,
+          labels: entityRoleLabels(entity),
           position: vectorSummary(entity.position),
           distance: Number(bot.entity.position.distanceTo(entity.position).toFixed(2))
         }))
@@ -1600,6 +1663,7 @@ function snapshotSession(record: SessionRecord): SessionSnapshot {
     ...(bot ? { selectedSlot: bot.quickBarSlot } : {}),
     ...(heldItem ? { heldItem } : {}),
     ...(inventory ? { inventory } : {}),
+    ...(inventorySlots ? { inventorySlots, inventorySlotCount: inventorySlots.length, inventoryHash } : {}),
     ...(openWindow ? { openWindow } : {}),
     ...(bossBars && bossBars.length > 0 ? { bossBars } : {}),
     ...(scoreboards && scoreboards.length > 0 ? { scoreboards } : {}),
@@ -1936,6 +2000,7 @@ function resolveEntityTarget(record: SessionRecord, options: any) {
   const entityId = Number(options.entityId);
   const wantedName = options.entity ? String(options.entity).toLowerCase() : undefined;
   const wantedUsername = options.username ? String(options.username).toLowerCase() : undefined;
+  const wantedRole = options.role ? String(options.role).trim().toLowerCase() : undefined;
 
   let candidates = Object.values(bot.entities ?? {}).filter((entity: any) => entity && entity !== bot.entity && entity.position);
   if (Number.isFinite(entityId)) candidates = candidates.filter((entity: any) => entity.id === entityId);
@@ -1949,6 +2014,9 @@ function resolveEntityTarget(record: SessionRecord, options: any) {
   if (wantedUsername) {
     candidates = candidates.filter((entity: any) => String(entity.username ?? "").toLowerCase() === wantedUsername);
   }
+  if (wantedRole) {
+    candidates = candidates.filter((entity: any) => entityRoleLabels(entity).some(label => label.toLowerCase().includes(wantedRole)));
+  }
   candidates = candidates.filter((entity: any) => bot.entity.position.distanceTo(entity.position) <= maxDistance);
   candidates.sort((a: any, b: any) => bot.entity.position.distanceTo(a.position) - bot.entity.position.distanceTo(b.position));
 
@@ -1958,7 +2026,8 @@ function resolveEntityTarget(record: SessionRecord, options: any) {
       maxDistance,
       entityId: Number.isFinite(entityId) ? entityId : undefined,
       entity: wantedName,
-      username: wantedUsername
+      username: wantedUsername,
+      role: wantedRole
     });
   }
   return target;
@@ -1999,9 +2068,26 @@ function entitySummary(bot: Bot, entity: any) {
     name: entity.name,
     type: entity.type,
     username: entity.username,
+    labels: entityRoleLabels(entity),
     position: vectorSummary(entity.position),
     distance: Number(bot.entity.position.distanceTo(entity.position).toFixed(2))
   };
+}
+
+function entityRoleLabels(entity: any) {
+  const labels: string[] = [];
+  const add = (value: unknown) => {
+    const text = typeof value === "string" ? value : textFromComponent(value);
+    const normalized = text?.trim();
+    if (normalized && !labels.some(label => label.toLowerCase() === normalized.toLowerCase())) labels.push(normalized);
+  };
+  for (const value of [entity.username, entity.name, entity.type, entity.mobType, entity.displayName, entity.customName]) add(value);
+  const metadata = entity.metadata;
+  const values = Array.isArray(metadata) ? metadata : metadata && typeof metadata === "object" ? Object.values(metadata) : [];
+  for (const value of values) {
+    if (typeof value === "string" || (value && typeof value === "object")) add(value);
+  }
+  return labels;
 }
 
 function addEvent(record: SessionRecord, type: string, message?: string, data?: unknown) {

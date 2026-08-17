@@ -675,7 +675,7 @@ async function waitForVisualConnection(runtime: any, timeoutMs: number) {
 }
 
 function getWorkspace() {
-  return path.resolve(program.opts().workspace);
+  return getPaths(program.opts().workspace).workspace;
 }
 
 async function waitForDaemon(workspace: string, timeoutMs: number) {
@@ -1127,6 +1127,7 @@ session
   .option("--entity-id <id>", "target entity id", Number)
   .option("--entity <name>", "target entity name, such as villager")
   .option("--username <username>", "target player username")
+  .option("--role <text>", "visible/custom name or role text, such as archer")
   .option("--nearest", "use the nearest matching entity", false)
   .option("--x <x>", "target x coordinate", Number)
   .option("--y <y>", "target y coordinate", Number)
@@ -1141,6 +1142,7 @@ session
   .option("--entity-id <id>", "target entity id", Number)
   .option("--entity <name>", "target entity name, such as villager")
   .option("--username <username>", "target player username")
+  .option("--role <text>", "visible/custom name or role text, such as archer")
   .option("--nearest", "use the nearest matching entity", false)
   .option("--max-distance <blocks>", "maximum entity search distance", Number, 8)
   .option("--method <method>", "entity interaction method: normal, at, or both", "at")
@@ -1156,6 +1158,7 @@ session
   .option("--entity-id <id>", "target entity id", Number)
   .option("--entity <name>", "target entity name, such as pig")
   .option("--username <username>", "target player username")
+  .option("--role <text>", "visible/custom name or role text, such as archer")
   .option("--nearest", "use the nearest matching entity", false)
   .option("--max-distance <blocks>", "maximum entity search distance", Number, 8)
   .option("--ticks <ticks>", "ticks to wait after using the item", (value) => Number(value), 20)
@@ -1227,6 +1230,7 @@ session
   .option("--entity-id <id>", "target entity id", Number)
   .option("--entity <name>", "target entity name, such as pig")
   .option("--username <username>", "target player username")
+  .option("--role <text>", "visible/custom name or role text, such as archer")
   .option("--nearest", "use the nearest matching entity", false)
   .option("--max-distance <blocks>", "maximum entity search distance", Number, 8)
   .option("--ticks <ticks>", "ticks to wait after attacking", (value) => Number(value), 20)
@@ -1309,10 +1313,42 @@ session
   .option("--type <type>", "event type to search, such as message or title")
   .option("--contains <text>", "text that must appear; repeatable", collect, [])
   .option("--case-sensitive", "match case exactly", false)
+  .option("--after <sequence>", "only match events after this sequence", (value) => Number(value))
   .option("--timeout-ticks <ticks>", "ticks to wait for the expectation", (value) => Number(value), 0)
   .action((name: string, options) =>
-    run(async () => callDaemon("POST", `/session/${encodeURIComponent(name)}/expect-event`, options, options.timeoutTicks * 50 + 10_000))
+    run(async () => callDaemon("POST", `/session/${encodeURIComponent(name)}/expect-event`, { ...options, afterSequence: options.after }, options.timeoutTicks * 50 + 10_000))
   );
+
+session
+  .command("expect-transition")
+  .description("Wait for a proxy/backend transition and verify the client reconnects stably.")
+  .argument("<name>")
+  .requiredOption("--after <sequence>", "event sequence captured before triggering the move", (value) => Number(value))
+  .option("--to-dimension <dimension>", "expected destination dimension text")
+  .option("--brand <brand>", "expected server brand text")
+  .option("--contains <text>", "other transition text to require; repeatable", collect, [])
+  .option("--timeout-ticks <ticks>", "maximum transition wait", (value) => Number(value), 200)
+  .option("--stable-ticks <ticks>", "connected ticks required after transition", (value) => Number(value), 10)
+  .action((name: string, options) => run(async () => {
+    if (!Number.isInteger(options.after) || options.after < 0) throw new MinecraftCliError("INVALID_EVENT_SEQUENCE", "Event sequence must be a non-negative integer.", 400);
+    const contains = [...(options.contains ?? []), ...(options.toDimension ? [options.toDimension] : []), ...(options.brand ? [options.brand] : [])];
+    const transition = await requestDaemonForCli("POST", `/session/${encodeURIComponent(name)}/expect-event`, {
+      types: ["server_transition", "game_change", "spawn"],
+      contains,
+      afterSequence: options.after,
+      timeoutTicks: options.timeoutTicks
+    }, options.timeoutTicks * 50 + 10_000);
+    const deadline = Date.now() + options.timeoutTicks * 50;
+    let core: any;
+    while (Date.now() <= deadline) {
+      core = await requestDaemonForCli("GET", `/session/${encodeURIComponent(name)}/state?part=core`);
+      if (core.connected && !core.connecting) break;
+      await new Promise(resolve => setTimeout(resolve, 250));
+    }
+    if (!core?.connected || core.connecting) throw new MinecraftCliError("TRANSITION_CONNECTION_UNSTABLE", "Transition event arrived but the destination connection did not stabilize.", 504, { transition, core });
+    if (options.stableTicks > 0) await requestDaemonForCli("POST", `/session/${encodeURIComponent(name)}/wait`, { ticks: options.stableTicks }, options.stableTicks * 50 + 10_000);
+    printResponse({ ok: true, data: { matched: true, transition, destination: core, stableTicks: options.stableTicks } }, { json: program.opts().json });
+  }));
 
 session
   .command("events")
@@ -1399,6 +1435,72 @@ session
       printResponse({ ok: true, data: { session: name, file, state } }, { json: program.opts().json });
     })
   );
+
+session
+  .command("inventory-checkpoint")
+  .description("Save an exact all-slot inventory snapshot for later comparison.")
+  .argument("<name>")
+  .option("--label <label>", "file label", "inventory")
+  .action((name: string, options) => run(async () => {
+    const workspace = getWorkspace();
+    const dirs = ensureSessionArtifactDirs(workspace, name);
+    const snapshot: any = await requestDaemonForCli("GET", `/session/${encodeURIComponent(name)}/state?part=inventory`);
+    const file = path.join(dirs.json, `${timestampFilePart()}-${safeFilePart(options.label)}.inventory.json`);
+    writeJsonFile(file, snapshot);
+    printResponse({ ok: true, data: { session: name, file, hash: snapshot.hash, slotCount: snapshot.slotCount } }, { json: program.opts().json });
+  }));
+
+session
+  .command("compare-inventory")
+  .description("Compare every inventory slot and item metadata with a saved checkpoint.")
+  .argument("<name>")
+  .requiredOption("--baseline <file>", "inventory checkpoint JSON file")
+  .option("--allow-changes", "return a successful diff instead of asserting equality", false)
+  .action((name: string, options) => run(async () => {
+    const baselineFile = path.resolve(options.baseline);
+    let baseline: any;
+    try {
+      baseline = JSON.parse(fs.readFileSync(baselineFile, "utf8"));
+    } catch (error) {
+      throw new MinecraftCliError("INVENTORY_BASELINE_INVALID", `Could not read inventory baseline: ${error instanceof Error ? error.message : String(error)}`, 400);
+    }
+    if (!Array.isArray(baseline?.slots) || typeof baseline?.hash !== "string") {
+      throw new MinecraftCliError("INVENTORY_BASELINE_INVALID", "Baseline must be created by session inventory-checkpoint.", 400);
+    }
+    const current: any = await requestDaemonForCli("GET", `/session/${encodeURIComponent(name)}/state?part=inventory`);
+    const maxSlots = Math.max(baseline.slots.length, current.slots.length);
+    const changes = [];
+    for (let slot = 0; slot < maxSlots; slot++) {
+      const before = baseline.slots[slot] ?? null;
+      const after = current.slots[slot] ?? null;
+      if (JSON.stringify(before) !== JSON.stringify(after)) changes.push({ slot, before, after });
+    }
+    const workspace = getWorkspace();
+    const dirs = ensureSessionArtifactDirs(workspace, name);
+    const reportFile = path.join(dirs.json, `${timestampFilePart()}-inventory-diff.json`);
+    const comparison = {
+      session: name,
+      matched: changes.length === 0,
+      baselineFile,
+      baselineHash: baseline.hash,
+      currentHash: current.hash,
+      baselineSlotCount: baseline.slots.length,
+      currentSlotCount: current.slots.length,
+      changeCount: changes.length,
+      changes
+    };
+    writeJsonFile(reportFile, comparison);
+    if (changes.length > 0 && !options.allowChanges) {
+      throw new MinecraftCliError("INVENTORY_CHANGED", "Inventory no longer matches the saved checkpoint.", 409, {
+        reportFile,
+        baselineHash: baseline.hash,
+        currentHash: current.hash,
+        changeCount: changes.length,
+        changes: changes.slice(0, 20)
+      });
+    }
+    printResponse({ ok: true, data: { ...comparison, reportFile, changes: changes.slice(0, 20) } }, { json: program.opts().json });
+  }));
 
 session
   .command("screenshot")
@@ -1859,6 +1961,31 @@ visual.command("click").argument("<name>")
     const state = await visualRequest(readVisualRuntime(getWorkspace(), name), route);
     printResponse({ ok: true, data: state }, { json: program.opts().json });
   }));
+
+visual.command("elements").description("List visible Minecraft screen widgets with text and GUI-scaled bounds.")
+  .argument("<name>")
+  .action((name: string) => run(async () => {
+    const state = await visualRequest(readVisualRuntime(getWorkspace(), name), "/screen/elements");
+    printResponse({ ok: true, data: state }, { json: program.opts().json });
+  }));
+
+for (const target of [
+  { command: "click-element", route: "click-element", description: "Click an active visible screen widget by its displayed text." },
+  { command: "hover-element", route: "hover-element", description: "Move the virtual cursor over an active visible screen widget by its displayed text." }
+]) {
+  visual.command(target.command).description(target.description)
+    .argument("<name>")
+    .argument("<text...>")
+    .option("--index <index>", "zero-based match index", (value) => Number(value), 0)
+    .option("--exact", "require the complete displayed text", false)
+    .action((name: string, text: string[], options) => run(async () => {
+      if (!Number.isInteger(options.index) || options.index < 0) throw new MinecraftCliError("VISUAL_ELEMENT_INDEX_INVALID", "Index must be a non-negative integer.", 400);
+      const query = new URLSearchParams({ text: text.join(" "), index: String(options.index) });
+      if (options.exact) query.set("exact", "true");
+      const state = await visualRequest(readVisualRuntime(getWorkspace(), name), `/screen/${target.route}?${query.toString()}`);
+      printResponse({ ok: true, data: state }, { json: program.opts().json });
+    }));
+}
 
 visual.command("type-text").description("Type text into the focused in-game screen control without using the system keyboard.")
   .argument("<name>")

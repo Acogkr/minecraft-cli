@@ -41,17 +41,20 @@ Use the globally installed `minecraft-cli` command. Support only `1.20.1`, `1.21
 - Read `session state <name> --part core` first.
 - Request only `inventory`, `entities`, `window`, `ui`, or `events` when needed.
 - Prefer `expect-chat`, `expect-event`, `expect-window`, and `expect-inventory` over full state dumps.
+- Use `inventory-checkpoint` and `compare-inventory` when every slot and item metadata must remain identical.
+- Capture the current event cursor before a proxy move, then use `expect-transition --after <sequence>` to verify reconnect and destination stability.
 - When polling events, retain `nextSequence` and pass it back as `events <name> --after <sequence>` so previously read events are not returned again.
 - Inspect only failed or explicitly visual screenshots.
 
 ## Visual Discipline
 
 - Use `visual hover-slot` before GUI Lore screenshots.
-- Use semantic `visual click-slot` where possible; use GUI-scaled `visual click` for dialogs and arbitrary screens.
+- Use `visual elements`, `visual hover-element`, and `visual click-element` for ordinary buttons and native dialogs. Use GUI-scaled `visual click` only when the screen has no semantic widget text.
 - Use `visual close-screen` for ESC/back behavior.
 - Use `visual open-chat`, `visual hover-chat`, and `visual click-hover` for interactive chat.
 - Use `visual type-text`, `visual press-key`, and `visual scroll` for focused fields, keyboard navigation, and long screens. These inject in-game events and do not take the user's Windows input focus.
 - Capture title/subtitle, action bar, boss bar, scoreboard, toast, resource-pack screen, dialog, and arbitrary plugin UI when relevant.
+- Native data-driven dialogs exist only in Minecraft 1.21.6 and newer, so among the supported versions test them on 1.21.11. Test plugin inventories and custom screens on all three versions.
 - Read `imageAnalysis` before loading a repeated screenshot. Skip exact duplicates and normally skip unchanged routine checkpoints; always inspect the PNG when small text, Lore, color, alignment, or the renderer itself is under test.
 - Read and write evidence in `.minecraft-cli/sessions/<name>` under the plugin project being tested.
 - Visual instances are created only when concurrent clients need them. Up to eight sessions per version can run with independent slots, ports, tokens, and artifacts, and stopped slots are reused.

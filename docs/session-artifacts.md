@@ -12,6 +12,8 @@ Layout:
 - `json/latest-inventory.json`, `latest-entities.json`, `latest-window.json`, `latest-ui.json`, `latest-events.json`: token-efficient state parts refreshed when that part is requested
 - `json/latest-event-buffer.json`: latest raw in-memory event buffer
 - `json/<timestamp>-<label>.json`: explicit saved states
+- `json/<timestamp>-<label>.inventory.json`: exact all-slot inventory checkpoint
+- `json/<timestamp>-inventory-diff.json`: exact slot and metadata comparison result
 - `json/<timestamp>-<label>.screenshot.json`: screenshot metadata plus session state
 - `logs/events.jsonl`: append-only event log
 - `screenshots/<timestamp>-<label>.png`: visual evidence
@@ -40,6 +42,9 @@ For reliable rendered tests, use the dedicated Fabric-controlled client. It does
 ```powershell
 minecraft-cli --json visual launch visual1 --host 127.0.0.1 --port 25565 --username VisualBot --version 1.21.4
 minecraft-cli --json visual state visual1
+minecraft-cli --json visual elements visual1
+minecraft-cli --json visual hover-element visual1 "Confirm" --exact
+minecraft-cli --json visual click-element visual1 "Confirm" --exact
 minecraft-cli --json visual hover-slot visual1 --slot 10
 minecraft-cli --json visual click-slot visual1 --slot 20
 minecraft-cli --json visual close-screen visual1
@@ -83,7 +88,7 @@ minecraft-cli --compact --json session state bot1 --part window
 minecraft-cli --compact --json session state bot1 --part ui
 ```
 
-Coordinates use Minecraft's GUI-scaled space, reported by `visual state` as `guiWidth` and `guiHeight`. They control an in-game virtual cursor and do not move the Windows pointer. Text, key, and scroll commands are also delivered directly to the current Minecraft screen. This provides a generic fallback for vanilla dialogs and most modded screens, including focused text fields and scrollable lists. Semantic commands such as `hover-slot` and `hover-chat` remain preferable because they survive layout changes.
+`visual elements` exposes visible widget text and GUI-scaled bounds. Prefer text-based `hover-element` and `click-element` for buttons, including native dialogs. Coordinates use the same GUI-scaled space reported by `visual state`; they are a fallback for custom-drawn controls without semantic text. None of these commands move the Windows pointer. Text, key, and scroll commands are also delivered directly to the current Minecraft screen.
 
 Keep one visual client only for checkpoints that need rendered evidence. Functional tests should remain on Mineflayer; launch the rendered client near visual assertions and stop it afterward with `visual stop`.
 

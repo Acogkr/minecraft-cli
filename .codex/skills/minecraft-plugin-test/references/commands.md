@@ -50,12 +50,25 @@ Rendered screenshot responses include `imageAnalysis.exactMatch`, `changedSample
 Generic dialog, form, and scrolling controls:
 
 ```powershell
+minecraft-cli --compact --json visual elements visual1
+minecraft-cli --compact --json visual hover-element visual1 "Confirm" --exact
+minecraft-cli --compact --json visual click-element visual1 "Confirm" --exact
 minecraft-cli --compact --json visual click visual1 --x 160 --y 90
 minecraft-cli --compact --json visual type-text visual1 "search text"
 minecraft-cli --compact --json visual press-key visual1 tab
 minecraft-cli --compact --json visual press-key visual1 enter
 minecraft-cli --compact --json visual move-cursor visual1 --x 280 --y 160
 minecraft-cli --compact --json visual scroll visual1 --delta -3
+```
+
+Prefer semantic element commands. Coordinate clicking is the fallback for widgets without text and custom-drawn screens. Native data-driven dialogs are available on supported version `1.21.11`, not `1.20.1` or `1.21.4`.
+
+Exact inventory and transfer assertions:
+
+```powershell
+minecraft-cli --compact --json session inventory-checkpoint bot1 --label before
+minecraft-cli --compact --json session compare-inventory bot1 --baseline .minecraft-cli/sessions/bot1/json/<checkpoint>.inventory.json
+minecraft-cli --compact --json session expect-transition bot1 --after 42 --brand Paper --timeout-ticks 200
 ```
 
 Supported keys are `enter`, `tab`, `backspace`, `delete`, `escape`, `up`, `down`, `left`, `right`, `home`, `end`, `page-up`, `page-down`, and `space`. Add `--modifiers 1`, `2`, or `4` for Shift, Control, or Alt; combine them by addition. Text is capped at 4096 characters per call.

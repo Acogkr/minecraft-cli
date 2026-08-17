@@ -6,6 +6,8 @@ Lifecycle audit: 2026-08-17
 
 Generic input audit: 2026-08-17
 
+Semantic and transition audit: 2026-08-18
+
 ## Scope
 
 - Offline Paper servers and real rendered Fabric clients for `1.20.1`, `1.21.4`, and `1.21.11`
@@ -29,8 +31,12 @@ Generic input audit: 2026-08-17
 | Recipe toast | pass | pass | pass |
 | Movement/block/entity/item events | pass | pass | pass |
 | Session PNG and JSON metadata | pass | pass | pass |
+| Semantic screen widgets | build pass | live pass | live pass |
+| Native data-driven dialog | n/a | n/a | pass |
 
-Arbitrary screens and dialogs use GUI-scaled virtual cursor movement, left/right/middle click, ESC, and framebuffer capture. Semantic control is available for inventory slots and interactive chat. Dialog-specific labels are not promised; visual inspection or screen-specific assertions remain necessary.
+Visible standard widgets are exposed as JSON with text, type, bounds, active state, and visibility. They can be hovered or clicked by displayed text and duplicate-match index. Inventory slots and interactive chat retain their specialized semantic commands; GUI-scaled coordinates remain available for custom-drawn controls without widget text.
+
+Minecraft's native data-driven dialogs were introduced in 1.21.6, so they are not applicable to 1.20.1 or 1.21.4. A real Paper 1.21.11 server displayed `minecraft:server_links`; the control adapter identified the Korean title and `뒤로` button, captured a 960x540 framebuffer PNG, hovered the button, clicked it by exact text, and returned to gameplay.
 
 Generic text input, navigation/editing keys, and virtual-cursor scrolling are available without taking Windows input focus. All three version adapters compile against their native input APIs. A real Paper `1.21.4` client test verified Korean and ASCII text entry, Backspace, scroll, Enter submission, framebuffer evidence, and matching server chat output. The JSON response reports both attempted and screen-handled character counts so an unfocused field can be detected without reading an image.
 
@@ -44,6 +50,8 @@ Generic text input, navigation/editing keys, and virtual-cursor scrolling are av
 - A five-step scenario with one explicitly included state returned `934B` instead of the complete `1,729B` report (`46%` fewer output bytes). The exact reduction is emitted for every scenario because it varies with the selected steps and failures.
 - Event responses expose a monotonic cursor so repeated polls return only unseen events. Mineflayer's documented `messagestr` alias is no longer stored beside the original `message`, and raw title/boss-bar/scoreboard/window packets are not duplicated after their semantic events.
 - A real Paper `1.21.4` chat produced exactly one filtered `message` event. Polling again with its returned `nextSequence` produced zero events, while the server log confirmed the same submitted text.
+- Exact inventory checkpoints include all 46 slots, null slots, item metadata, and a SHA-256 hash. A real `1.21.4` comparison matched before mutation and reported exactly one changed slot after one stone was given.
+- A real Paper `1.21.11` `/transfer` request was detected, the headless client disconnected and automatically reconnected, and `expect-transition` verified the destination Paper brand plus five stable ticks.
 - Real `1.21.4` framebuffer captures produced SHA-256 and previous-frame change metadata. Comparing two 960×540 PNGs 50 times averaged `19.24ms` per comparison; the live second capture reported 2,304 samples, `0.00447` mean channel delta, and `0.00825` changed-sample ratio.
 - Artifact retention is preview-only by default and was tested against old/new screenshots, historical/latest JSON, and scenario reports. Applying the plan removed only four eligible generated files and retained protected/latest files. The real project preview found zero candidates under the default keep counts, so no user evidence was deleted.
 
@@ -69,6 +77,7 @@ A Codex skill is installed at `~/.codex/skills/minecraft-plugin-test` and valida
 - Microsoft device-code issuance was verified against the live service without approving an account. The CLI opens only a validated Microsoft HTTPS URL with the code prefilled, copies the same code through a non-interpolated Windows process environment, and supports independent `--no-browser` and `--no-clipboard` opt-outs. Cache isolation, redacted metadata, offline regression, MultiMC active-account selection, profile override, and missing-profile rejection are covered by `test:auth`.
 - A complete first account approval was intentionally not performed because it requires the user's Microsoft consent. Code issuance is not reported as a completed login; the CLI waits for the authentication flow to finish before returning success.
 - Resource-pack acceptance and server-specific custom dialogs require a server fixture that emits them. Generic coordinate control and screenshots are available, but no software can prove every future plugin screen without assertions for that screen.
+- Text-based widget selection survives layout changes when a standard Minecraft widget exposes its label. Custom-drawn canvases, icon-only controls, and body-text click regions can still require coordinates or screen-specific assertions.
 - The tests prove the documented scenarios on the recorded versions and environment; they do not constitute a mathematical guarantee that no future bug can exist.
 
 ## Instance Lifecycle Audit
@@ -85,6 +94,8 @@ A Codex skill is installed at `~/.codex/skills/minecraft-plugin-test` and valida
 - MultiMC groups only the managed slots that actually exist under `minecraft-cli`; isolated tests preserved unrelated groups, hidden state, and custom group members.
 - The lazy-allocation migration pruned 20 never-launched placeholders from the local MultiMC setup and retained four instances with real launch history.
 - Twelve simultaneous first-use CLI calls produced one daemon, and cleanup left zero daemon processes; this is covered by `test:daemon-lifecycle`.
+- The same daemon lifecycle test now splits those calls between a real workspace path and a Windows junction alias, verifies the canonical workspace stored by the daemon, and still observes one process.
+- A real named NPC exposed `Minecraft CLI NPC` in entity labels; `--role` selected it independently of entity ID and opened its GUI by right-click.
 - After updating `minecraft-protocol` to `1.67.0`, the full Paper `1.20.1` behavior E2E completed through final cleanup and disconnect.
 - The test plugin now builds reproducibly for Java 17 with Bukkit API `1.20`, so the same fixture can load on every supported server line.
 - A duplicate Java process without the visual control port was identified and removed while the controlled client stayed connected. New launches now retain the control-port owner and stop duplicate processes automatically.

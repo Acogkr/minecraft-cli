@@ -3,15 +3,25 @@ import path from "node:path";
 import type { RuntimePaths } from "./types";
 
 export function getPaths(workspace = process.cwd()): RuntimePaths {
-  const root = path.join(workspace, ".minecraft-cli");
+  const normalizedWorkspace = normalizeWorkspace(workspace);
+  const root = path.join(normalizedWorkspace, ".minecraft-cli");
   return {
-    workspace,
+    workspace: normalizedWorkspace,
     root,
     logs: path.join(root, "logs"),
     sessions: path.join(root, "sessions"),
     runtime: path.join(root, "runtime"),
     daemonState: path.join(root, "runtime", "daemon.json")
   };
+}
+
+export function normalizeWorkspace(workspace = process.cwd()) {
+  const resolved = path.resolve(workspace);
+  try {
+    return fs.realpathSync.native(resolved);
+  } catch {
+    return resolved;
+  }
 }
 
 export function ensureBaseDirs(paths: RuntimePaths) {

@@ -89,6 +89,8 @@ minecraft-cli --compact --json session create bot1 `
 minecraft-cli --compact --json session command bot1 mcgui
 minecraft-cli --compact --json session state bot1 --part window
 minecraft-cli --compact --json session click-item bot1 --item book --lore "slot 20"
+minecraft-cli --compact --json session look-at bot1 --role "상점 NPC" --max-distance 10
+minecraft-cli --compact --json session interact bot1 --role "상점 NPC" --max-distance 10
 ```
 
 세션 이름이 다르면 서로 독립적으로 동작하므로 여러 클라이언트를 동시에 접속해도 됩니다.
@@ -141,9 +143,12 @@ minecraft-cli --compact --json visual screenshot visual1 --label gui-lore
 minecraft-cli --compact --json visual stop visual1
 ```
 
-일반 다이얼로그나 검색·입력 화면은 좌표 클릭 뒤 실제 키보드를 건드리지 않고 텍스트와 키 입력을 전달할 수 있습니다. 스크롤은 마지막 가상 커서 위치에서 동작하며, 커서를 옮기지 않았다면 화면 중앙을 사용합니다.
+일반 화면과 다이얼로그는 먼저 표시 문구로 위젯을 찾아 클릭합니다. 버튼 문구가 없거나 커스텀 렌더링된 화면만 좌표를 사용합니다. 입력과 스크롤은 실제 키보드나 Windows 마우스를 건드리지 않고 Minecraft 내부로 전달됩니다.
 
 ```powershell
+minecraft-cli --compact --json visual elements visual1
+minecraft-cli --compact --json visual hover-element visual1 "확인" --exact
+minecraft-cli --compact --json visual click-element visual1 "확인" --exact
 minecraft-cli --compact --json visual click visual1 --x 160 --y 90
 minecraft-cli --compact --json visual type-text visual1 "테스트 입력"
 minecraft-cli --compact --json visual press-key visual1 tab
@@ -151,6 +156,8 @@ minecraft-cli --compact --json visual press-key visual1 enter
 minecraft-cli --compact --json visual move-cursor visual1 --x 280 --y 160
 minecraft-cli --compact --json visual scroll visual1 --delta -3
 ```
+
+네이티브 데이터 기반 다이얼로그는 Minecraft `1.21.6`에 추가됐으므로 지원 버전 중에서는 `1.21.11`에서만 검사할 수 있습니다. `1.20.1`과 `1.21.4`의 플러그인 GUI나 커스텀 화면은 같은 위젯·좌표·키 입력 API로 검사합니다.
 
 화면 클라이언트는 MultiMC에 이미 로그인된 기본 계정을 그대로 사용할 수 있습니다.
 
@@ -208,6 +215,19 @@ JSON, 메타데이터, 스크린샷은 테스트 중인 프로젝트 안에 세�
 minecraft-cli --compact --json session state bot1 --part core
 minecraft-cli --compact --json session state bot1 --part window
 minecraft-cli --compact --json session state bot1 --part ui
+```
+
+인벤토리는 빈 칸을 포함한 전체 슬롯과 아이템 메타데이터를 체크포인트로 저장하고 정확히 비교할 수 있습니다.
+
+```powershell
+minecraft-cli --compact --json session inventory-checkpoint bot1 --label before
+minecraft-cli --compact --json session compare-inventory bot1 --baseline .minecraft-cli/sessions/bot1/json/<checkpoint>.inventory.json
+```
+
+프록시 또는 서버의 `/transfer` 전에는 이벤트 응답의 `nextSequence`를 기록하고, 이동 뒤 연결과 목적지 정보를 함께 확인합니다.
+
+```powershell
+minecraft-cli --compact --json session expect-transition bot1 --after 42 --brand Paper --timeout-ticks 200
 ```
 
 이벤트를 반복 조회할 때는 응답의 `nextSequence`를 기억하고 다음 요청에 넘깁니다. 이미 읽은 채팅과 UI 이벤트가 다시 출력되지 않습니다.

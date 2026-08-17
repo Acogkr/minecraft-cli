@@ -38,6 +38,9 @@ try {
   const excessiveText = run(["visual", "type-text", "missing", "x".repeat(4097)], 2);
   assert.equal(excessiveText.error.code, "VISUAL_TEXT_TOO_LONG");
 
+  const invalidElementIndex = run(["visual", "click-element", "missing", "Confirm", "--index", "-1"], 2);
+  assert.equal(invalidElementIndex.error.code, "VISUAL_ELEMENT_INDEX_INVALID");
+
   const prepared = run(["visual", "prepare", "lazy-one", "--version", "1.21.4", "--multimc", multiMcRoot]);
   assert.equal(prepared.data.instanceId, "minecraft-cli-1.21.4");
   assert.equal(prepared.data.createdInstance, true);

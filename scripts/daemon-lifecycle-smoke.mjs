@@ -6,13 +6,15 @@ import { spawn, spawnSync } from "node:child_process";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "minecraft-cli-daemon-"));
 const workspace = path.join(root, "workspace");
+const workspaceAlias = path.join(root, "workspace-alias");
 const cli = path.resolve("dist", "cli.js");
 const daemonPath = path.resolve("dist", "daemon.js");
 fs.mkdirSync(workspace, { recursive: true });
+fs.symlinkSync(workspace, workspaceAlias, "junction");
 
-function runAsync(args) {
+function runAsync(args, selectedWorkspace = workspace) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [cli, "--json", "--workspace", workspace, ...args], {
+    const child = spawn(process.execPath, [cli, "--json", "--workspace", selectedWorkspace, ...args], {
       cwd: process.cwd(),
       windowsHide: true
     });
@@ -44,10 +46,11 @@ function daemonProcessCount() {
 }
 
 try {
-  const results = await Promise.all(Array.from({ length: 12 }, () => runAsync(["session", "list"])));
+  const results = await Promise.all(Array.from({ length: 12 }, (_, index) => runAsync(["session", "list"], index % 2 === 0 ? workspace : workspaceAlias)));
   assert.equal(results.every(result => result.ok === true), true);
   const state = JSON.parse(fs.readFileSync(path.join(workspace, ".minecraft-cli", "runtime", "daemon.json"), "utf8"));
   assert.equal(Number.isInteger(state.pid), true);
+  assert.equal(state.workspace.toLowerCase(), fs.realpathSync.native(workspace).toLowerCase());
   if (process.platform === "win32") assert.equal(daemonProcessCount(), 1);
 
   await runAsync(["cleanup"]);

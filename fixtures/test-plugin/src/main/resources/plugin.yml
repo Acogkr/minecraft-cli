@@ -14,4 +14,4 @@ commands:
     usage: /mcgui
   mchelper:
     description: minecraft-cli helper event test command
-    usage: /mchelper <give|block|target|title|actionbar|bossbar|scoreboard|sound|signals|setup>
+    usage: /mchelper <give|transition|block|target|title|actionbar|bossbar|scoreboard|sound|signals|setup>

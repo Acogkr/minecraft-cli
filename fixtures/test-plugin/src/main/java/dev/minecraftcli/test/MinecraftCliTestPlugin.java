@@ -157,6 +157,16 @@ public final class MinecraftCliTestPlugin extends JavaPlugin implements CommandE
         player.getInventory().addItem(new ItemStack(material, amount));
         player.sendMessage("minecraft-cli-helper gave " + amount + " " + material.name().toLowerCase(Locale.ROOT));
       }
+      case "transition" -> {
+        String destinationName = player.getWorld().getEnvironment() == org.bukkit.World.Environment.NETHER ? "world" : "world_nether";
+        org.bukkit.World destination = Bukkit.getWorld(destinationName);
+        if (destination == null) {
+          player.sendMessage("minecraft-cli-helper transition world unavailable " + destinationName);
+          return;
+        }
+        player.teleport(destination.getSpawnLocation());
+        player.sendMessage("minecraft-cli-helper transition complete " + destination.getEnvironment().name().toLowerCase(Locale.ROOT));
+      }
       case "block" -> {
         Material material = parseMaterial(args.length > 1 ? args[1] : "stone");
         Block block = blockInFront(player);

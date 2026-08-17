@@ -90,11 +90,14 @@ try {
   if (!npcIdMatch) throw new Error(`Could not parse NPC id from line: ${npcSpawn}`);
   const npcId = npcIdMatch[1];
   expectOk("wait for npc tracking", run(["session", "wait", session, "--ticks", "100"]));
+  const entities = expectOk("npc role labels", run(["session", "state", session, "--part", "entities"]));
+  const npc = entities.nearbyEntities.find(entity => entity.id === Number(npcId));
+  if (!npc?.labels?.some(label => label.includes("Minecraft CLI NPC"))) throw new Error(`NPC role label missing: ${JSON.stringify(npc)}`);
   expectOk("give npc click item", run(["session", "command", session, "mchelper", "give", "stone", "1"]));
   expectOk("equip npc click item", run(["session", "equip-item", session, "--item", "stone"]));
   expectOk("wait for equipped item", run(["session", "wait", session, "--ticks", "10"]));
-  expectOk("look at npc", run(["session", "look-at", session, "--entity-id", npcId, "--max-distance", "6"]));
-  expectOk("right-click npc with held item", run(["session", "use-on", session, "--entity-id", npcId, "--max-distance", "6", "--ticks", "20"]));
+  expectOk("look at npc by role", run(["session", "look-at", session, "--role", "Minecraft CLI NPC", "--max-distance", "6"]));
+  expectOk("right-click npc by role", run(["session", "use-on", session, "--role", "Minecraft CLI NPC", "--max-distance", "6", "--ticks", "20"]));
   expectChat("npc clicked");
   expectOk("npc gui emerald", run(["session", "expect-window", session, "--title", "Minecraft CLI NPC GUI", "--slot", "3", "--item", "emerald", "--timeout-ticks", "80"]));
   expectOk("npc gui diamond", run(["session", "expect-window", session, "--slot", "5", "--item", "diamond", "--timeout-ticks", "80"]));
@@ -174,6 +177,10 @@ try {
   );
   expectOk("close root gui", run(["session", "close-window", session, "--ticks", "10"]));
 
+  const checkpoint = expectOk("inventory checkpoint", run(["session", "inventory-checkpoint", session, "--label", "e2e-before"]));
+  const inventoryMatch = expectOk("exact inventory match", run(["session", "compare-inventory", session, "--baseline", checkpoint.file]));
+  if (!inventoryMatch.matched || inventoryMatch.currentSlotCount === 0) throw new Error(`Exact inventory comparison failed: ${JSON.stringify(inventoryMatch)}`);
+
   clearEvents();
   expectOk("signals command", run(["session", "command", session, "mchelper", "signals"]));
   expectChat("signals sent");
@@ -229,6 +236,10 @@ try {
   clearEvents();
   expectOk("cleanup helper entities", run(["session", "command", session, "mchelper", "cleanup"]));
   expectChat("cleanup removed");
+
+  const cursor = expectOk("transition cursor", run(["session", "events", session, "--limit", "1"])).nextSequence;
+  expectOk("trigger dimension transition", run(["session", "command", session, "mchelper", "transition"]));
+  expectOk("verify dimension transition", run(["session", "expect-transition", session, "--after", String(cursor), "--timeout-ticks", "120", "--stable-ticks", "5"], { timeout: 30_000 }));
 
   expectOk("cleanup", run(["cleanup"], { timeout: 50_000 }));
   console.log(`minecraft-cli Paper ${version} e2e: ok`);

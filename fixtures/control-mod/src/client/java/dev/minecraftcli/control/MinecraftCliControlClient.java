@@ -2,6 +2,7 @@ package dev.minecraftcli.control;
 
 import com.google.gson.Gson;
 import com.google.gson.JsonObject;
+import com.google.gson.JsonArray;
 import com.sun.net.httpserver.HttpExchange;
 import com.sun.net.httpserver.HttpServer;
 import java.io.IOException;
@@ -18,6 +19,7 @@ import net.minecraft.client.Screenshot;
 import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
 import net.minecraft.world.inventory.ClickType;
@@ -51,6 +53,9 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
       server.createContext("/screen/click", exchange -> respondAuthorized(exchange, this::clickVirtual));
       server.createContext("/screen/move-cursor", exchange -> respondAuthorized(exchange, () -> moveCursor(queryInt(exchange, "x"), queryInt(exchange, "y"))));
       server.createContext("/screen/click-at", exchange -> respondAuthorized(exchange, () -> clickAt(queryInt(exchange, "x"), queryInt(exchange, "y"), queryInt(exchange, "button"))));
+      server.createContext("/screen/elements", exchange -> respondAuthorized(exchange, this::screenElements));
+      server.createContext("/screen/click-element", exchange -> respondAuthorized(exchange, () -> targetElement(queryRequired(exchange, "text"), queryIntDefault(exchange, "index", 0), queryBoolean(exchange, "exact"), true)));
+      server.createContext("/screen/hover-element", exchange -> respondAuthorized(exchange, () -> targetElement(queryRequired(exchange, "text"), queryIntDefault(exchange, "index", 0), queryBoolean(exchange, "exact"), false)));
       server.createContext("/screen/type", exchange -> respondAuthorized(exchange, () -> typeText(queryRequired(exchange, "text"))));
       server.createContext("/screen/key", exchange -> respondAuthorized(exchange, () -> pressKey(queryRequired(exchange, "key"), queryIntDefault(exchange, "modifiers", 0))));
       server.createContext("/screen/scroll", exchange -> respondAuthorized(exchange, () -> scroll(queryDouble(exchange, "delta"))));
@@ -243,6 +248,66 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
     });
   }
 
+  private JsonObject screenElements() throws Exception {
+    return onClient(() -> {
+      if (client.screen == null) throw new IllegalStateException("No screen is open");
+      JsonObject result = state();
+      result.addProperty("title", client.screen.getTitle().getString());
+      JsonArray elements = new JsonArray();
+      int index = 0;
+      for (var child : client.screen.children()) {
+        if (child instanceof AbstractWidget widget) elements.add(widgetSummary(widget, index));
+        index++;
+      }
+      result.add("elements", elements);
+      return result;
+    });
+  }
+
+  private JsonObject targetElement(String text, int requestedIndex, boolean exact, boolean click) throws Exception {
+    if (requestedIndex < 0) throw new IllegalArgumentException("index must be non-negative");
+    return onClient(() -> {
+      if (client.screen == null) throw new IllegalStateException("No screen is open");
+      int matched = 0;
+      int childIndex = 0;
+      for (var child : client.screen.children()) {
+        if (child instanceof AbstractWidget widget && widget.visible && widget.active && textMatches(widget.getMessage().getString(), text, exact)) {
+          if (matched++ == requestedIndex) {
+            double x = widget.getX() + widget.getWidth() / 2.0;
+            double y = widget.getY() + widget.getHeight() / 2.0;
+            double scale = client.getWindow().getGuiScale();
+            VirtualCursor.set(x * scale, y * scale);
+            boolean handled = !click || client.screen.mouseClicked(x, y, 0);
+            JsonObject result = state();
+            result.add("element", widgetSummary(widget, childIndex));
+            result.addProperty("handled", handled);
+            return result;
+          }
+        }
+        childIndex++;
+      }
+      throw new IllegalArgumentException("No active visible element matched: " + text);
+    });
+  }
+
+  private static JsonObject widgetSummary(AbstractWidget widget, int index) {
+    JsonObject value = new JsonObject();
+    value.addProperty("index", index);
+    value.addProperty("type", widget.getClass().getName());
+    value.addProperty("text", widget.getMessage().getString());
+    value.addProperty("x", widget.getX());
+    value.addProperty("y", widget.getY());
+    value.addProperty("width", widget.getWidth());
+    value.addProperty("height", widget.getHeight());
+    value.addProperty("active", widget.active);
+    value.addProperty("visible", widget.visible);
+    return value;
+  }
+
+  private static boolean textMatches(String actual, String expected, boolean exact) {
+    return exact ? actual.equalsIgnoreCase(expected) : actual.toLowerCase(java.util.Locale.ROOT).contains(expected.toLowerCase(java.util.Locale.ROOT));
+  }
+
   private JsonObject typeText(String text) throws Exception {
     if (text.length() > 4096) throw new IllegalArgumentException("text must be at most 4096 characters");
     return onClient(() -> {
@@ -322,6 +387,7 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
   private static int queryIntDefault(HttpExchange exchange, String name, int fallback) { String value = query(exchange, name); return value == null ? fallback : Integer.parseInt(value); }
   private static double queryDouble(HttpExchange exchange, String name) { return Double.parseDouble(queryRequired(exchange, name)); }
   private static String queryRequired(HttpExchange exchange, String name) { String value = query(exchange, name); if (value == null) throw new IllegalArgumentException(name + " is required"); return value; }
+  private static boolean queryBoolean(HttpExchange exchange, String name) { return Boolean.parseBoolean(query(exchange, name)); }
   private static int keyCode(String key) {
     return switch (key.toLowerCase()) {
       case "enter" -> GLFW.GLFW_KEY_ENTER;

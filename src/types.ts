@@ -68,6 +68,9 @@ export interface SessionSnapshot {
   selectedSlot?: number;
   heldItem?: unknown;
   inventory?: unknown[];
+  inventorySlots?: Array<unknown | null>;
+  inventoryHash?: string;
+  inventorySlotCount?: number;
   openWindow?: unknown;
   bossBars?: unknown[];
   scoreboards?: unknown[];
