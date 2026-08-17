@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  cli:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run build
+      - run: npm run test:auth
+      - run: npm run test:artifacts
+      - run: npm run test:daemon-lifecycle
+      - run: npm run test:event-cursor
+      - run: npm run test:image-diff
+      - run: npm run test:scenario
+      - run: npm run test:visual-lifecycle
+      - run: npm pack --dry-run
+      - working-directory: fixtures/test-plugin
+        run: ..\control-mod\gradlew.bat build
+
+  control-mods:
+    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        project:
+          - fixtures/control-mod-1.20.1
+          - fixtures/control-mod
+          - fixtures/control-mod-1.21.11
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: 21
+      - uses: gradle/actions/setup-gradle@v4
+      - working-directory: ${{ matrix.project }}
+        run: .\gradlew.bat build

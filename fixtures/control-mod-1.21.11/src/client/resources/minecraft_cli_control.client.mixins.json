@@ -1,0 +1,7 @@
+{
+  "required": true,
+  "package": "dev.minecraftcli.control.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "client": ["MouseHandlerMixin", "ChatScreenMixin", "ChatScreenAccessor", "ScreenCursorMixin"],
+  "injectors": { "defaultRequire": 1 }
+}

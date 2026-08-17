@@ -1,0 +1,8 @@
+node_modules/
+dist/
+.minecraft-cli/
+fixtures/test-plugin/build/
+fixtures/*/.gradle/
+fixtures/*/build/
+npm-debug.log*
+*.tsbuildinfo

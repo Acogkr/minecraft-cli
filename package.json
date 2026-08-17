@@ -1,0 +1,61 @@
+{
+  "name": "minecraft-cli",
+  "version": "0.1.0",
+  "description": "Minecraft client session controller for agent-driven plugin testing on external servers.",
+  "license": "MIT",
+  "type": "commonjs",
+  "bin": {
+    "minecraft-cli": "dist/cli.js"
+  },
+  "files": [
+    ".codex/skills/minecraft-plugin-test",
+    "dist",
+    "docs",
+    "fixtures/control-mod",
+    "fixtures/control-mod-1.20.1",
+    "fixtures/control-mod-1.21.11",
+    "scripts/auth-smoke.mjs",
+    "scripts/artifacts-smoke.mjs",
+    "scripts/daemon-lifecycle-smoke.mjs",
+    "scripts/e2e-paper.mjs",
+    "scripts/event-cursor-smoke.mjs",
+    "scripts/install-skill.mjs",
+    "scripts/image-diff-smoke.mjs",
+    "scripts/scenario-smoke.mjs",
+    "scripts/visual-lifecycle-smoke.mjs",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/cli.ts",
+    "prepack": "npm run build",
+    "install:global": "node scripts/install-skill.mjs",
+    "install:skill": "node scripts/install-skill.mjs --skill-only",
+    "start": "node dist/cli.js",
+    "test:smoke": "npm run test:daemon-lifecycle",
+    "test:auth": "node scripts/auth-smoke.mjs",
+    "test:artifacts": "node scripts/artifacts-smoke.mjs",
+    "test:daemon-lifecycle": "node scripts/daemon-lifecycle-smoke.mjs",
+    "test:event-cursor": "node scripts/event-cursor-smoke.mjs",
+    "test:image-diff": "node scripts/image-diff-smoke.mjs",
+    "test:scenario": "node scripts/scenario-smoke.mjs",
+    "test:visual-lifecycle": "node scripts/visual-lifecycle-smoke.mjs",
+    "test:e2e:paper": "node scripts/e2e-paper.mjs"
+  },
+  "dependencies": {
+    "commander": "^12.1.0",
+    "mineflayer": "^4.37.1",
+    "pngjs": "^7.0.0",
+    "prismarine-auth": "^3.1.1"
+  },
+  "devDependencies": {
+    "@types/node": "^22.13.14",
+    "@types/pngjs": "^6.0.5",
+    "tsx": "^4.19.3",
+    "typescript": "^5.8.2"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}

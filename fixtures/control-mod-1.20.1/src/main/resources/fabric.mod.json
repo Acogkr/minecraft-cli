@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 1,
+  "id": "minecraft_cli_control",
+  "version": "${version}",
+  "name": "Minecraft CLI Control",
+  "description": "Local-only visual test control bridge for minecraft-cli.",
+  "authors": ["minecraft-cli"],
+  "license": "CC0-1.0",
+  "environment": "client",
+  "entrypoints": {
+    "client": ["dev.minecraftcli.control.MinecraftCliControlClient"]
+  },
+  "mixins": [
+    {
+      "config": "minecraft_cli_control.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=0.16.9",
+    "minecraft": "~1.20.1",
+    "java": ">=17"
+  }
+}
