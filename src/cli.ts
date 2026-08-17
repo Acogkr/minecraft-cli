@@ -819,43 +819,21 @@ async function withDaemonStartLock<T>(workspace: string, action: () => Promise<T
 }
 
 async function launchDaemonProcess(workspace: string, daemonPath: string) {
-  if (process.platform === "win32") {
-    const script = [
-      `Start-Process`,
-      `-WindowStyle Hidden`,
-      `-FilePath ${powerShellString(process.execPath)}`,
-      `-WorkingDirectory ${powerShellString(workspace)}`,
-      `-ArgumentList @(${powerShellString(daemonPath)}, '--workspace', ${powerShellString(workspace)})`
-    ].join(" ");
-    const launcher = spawn("powershell.exe", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-WindowStyle", "Hidden", "-Command", script], {
-      cwd: workspace,
-      stdio: "ignore",
-      windowsHide: true
-    });
-    await waitForLauncher(launcher);
-    return;
-  }
-
   const child = spawn(process.execPath, [daemonPath, "--workspace", workspace], {
     cwd: workspace,
     detached: true,
-    stdio: "ignore"
+    stdio: "ignore",
+    windowsHide: true
+  });
+  await new Promise<void>((resolve, reject) => {
+    child.once("error", reject);
+    child.once("spawn", resolve);
   });
   child.unref();
 }
 
 function powerShellString(value: string) {
   return `'${value.replace(/'/g, "''")}'`;
-}
-
-function waitForLauncher(child: ReturnType<typeof spawn>) {
-  return new Promise<void>((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", (code) => {
-      if (code === 0) resolve();
-      else reject(new MinecraftCliError("DAEMON_LAUNCH_FAILED", `Daemon launcher exited with code ${code}.`, 500));
-    });
-  });
 }
 
 async function callDaemon<T>(method: string, route: string, body?: unknown, timeoutMs?: number) {

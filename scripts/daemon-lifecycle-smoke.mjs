@@ -6,7 +6,7 @@ import net from "node:net";
 import { spawn, spawnSync } from "node:child_process";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "minecraft-cli-daemon-"));
-const workspace = path.join(root, "workspace");
+const workspace = path.join(root, "한글 workspace path");
 const workspaceAlias = path.join(root, "workspace-alias");
 const cli = path.resolve("dist", "cli.js");
 const daemonPath = path.resolve("dist", "daemon.js");
