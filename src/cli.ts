@@ -687,7 +687,7 @@ async function waitForDaemon(workspace: string, timeoutMs: number) {
     if (state && isProcessAlive(state.pid)) {
       try {
         const health = await requestDaemonAt(state.port, "GET", "/health", undefined, 1000, state.token);
-        if (health.ok) return state;
+        if (daemonHealthMatches(state, workspace, health)) return state;
       } catch (error) {
         lastError = error;
       }
@@ -701,12 +701,23 @@ async function waitForDaemon(workspace: string, timeoutMs: number) {
   });
 }
 
-async function probeDaemon(state: NonNullable<ReturnType<typeof readDaemonState>>, attempts = 4) {
+function daemonHealthMatches(state: NonNullable<ReturnType<typeof readDaemonState>>, workspace: string, health: any) {
+  if (!health?.ok || Number(health.data?.pid) !== state.pid) return false;
+  if (typeof state.workspace !== "string" || typeof health.data?.workspace !== "string") return false;
+  const expected = getPaths(workspace).workspace;
+  const recorded = getPaths(state.workspace).workspace;
+  const reported = getPaths(health.data.workspace).workspace;
+  return process.platform === "win32"
+    ? recorded.toLowerCase() === expected.toLowerCase() && reported.toLowerCase() === expected.toLowerCase()
+    : recorded === expected && reported === expected;
+}
+
+async function probeDaemon(state: NonNullable<ReturnType<typeof readDaemonState>>, workspace: string, attempts = 4) {
   for (let attempt = 0; attempt < attempts; attempt++) {
     if (!isProcessAlive(state.pid)) return false;
     try {
       const health = await requestDaemonAt(state.port, "GET", "/health", undefined, 1500, state.token);
-      if (health.ok) return true;
+      if (daemonHealthMatches(state, workspace, health)) return true;
     } catch {
       // Retry before deciding that a live process is stale.
     }
@@ -747,7 +758,7 @@ async function retireUnresponsiveDaemon(workspace: string, state: NonNullable<Re
 async function ensureDaemon(workspace: string): Promise<{ state: NonNullable<ReturnType<typeof readDaemonState>>; started: boolean }> {
   ensureBaseDirs(getPaths(workspace));
   const existing = readDaemonState(workspace);
-  if (existing && await probeDaemon(existing)) {
+  if (existing && await probeDaemon(existing, workspace)) {
     return { state: existing, started: false };
   }
 
@@ -757,7 +768,7 @@ async function ensureDaemon(workspace: string): Promise<{ state: NonNullable<Ret
     if (!fs.existsSync(daemonPath)) {
       throw new MinecraftCliError("DAEMON_NOT_BUILT", "dist/daemon.js does not exist. Run npm run build first.", 500);
     }
-    if (concurrent && await probeDaemon(concurrent)) {
+    if (concurrent && await probeDaemon(concurrent, workspace)) {
       return { state: concurrent, started: false };
     }
     if (concurrent && isProcessAlive(concurrent.pid)) {
