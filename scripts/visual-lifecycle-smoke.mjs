@@ -46,6 +46,14 @@ try {
   assert.equal(prepared.data.createdInstance, true);
   assert.equal("createdSlots" in prepared.data, false);
 
+  const capabilities = run(["actor", "capabilities", "lazy-one"]);
+  assert.equal(capabilities.data.capabilities.npcRoleInteraction.available, false);
+  assert.equal(capabilities.data.capabilities.nativeDialog.available, false);
+  assert.equal(capabilities.data.capabilities.nativeDialog.reason, "requires_visual_1.21.11");
+
+  const unavailableRole = run(["actor", "interact-role", "lazy-one", "--role", "NPC"], 2);
+  assert.equal(unavailableRole.error.code, "ACTOR_CAPABILITY_UNAVAILABLE");
+
   const managed = fs.readdirSync(path.join(multiMcRoot, "instances"), { withFileTypes: true })
     .filter(entry => entry.isDirectory() && entry.name.startsWith("minecraft-cli-"))
     .map(entry => entry.name);

@@ -17,6 +17,7 @@ jobs:
       - run: npm run build
       - run: npm run test:auth
       - run: npm run test:artifacts
+      - run: npm run test:checkpoint
       - run: npm run test:daemon-lifecycle
       - run: npm run test:event-cursor
       - run: npm run test:image-diff
@@ -24,6 +25,8 @@ jobs:
       - run: npm run test:visual-lifecycle
       - run: npm pack --dry-run
       - working-directory: fixtures/test-plugin
+        run: ..\control-mod\gradlew.bat build
+      - working-directory: fixtures/paper-probe
         run: ..\control-mod\gradlew.bat build
 
   control-mods:

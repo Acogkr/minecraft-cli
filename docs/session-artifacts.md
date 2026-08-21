@@ -17,10 +17,12 @@ Layout:
 - `json/<timestamp>-<label>.screenshot.json`: screenshot metadata plus session state
 - `logs/events.jsonl`: append-only event log
 - `screenshots/<timestamp>-<label>.png`: visual evidence
+- `screenshots/crops/<timestamp>-<label>-<region>.png`: changed visual region only
+- `checkpoints/<label>.json`: named state baseline
 
 Events contain a monotonically increasing `sequence`. The `events` command returns `oldestSequence` and `nextSequence`; pass the latter to `--after` on the next poll. Clearing the in-memory buffer does not reuse sequence numbers.
 
-Multi-session scenario reports are stored separately under `.minecraft-cli/runs/<timestamp>-<scenario>.json`. A report contains every compact step response, while the normal CLI result contains only the summary, failures, and steps marked with `includeResponse`.
+Multi-session scenario reports are stored separately under `.minecraft-cli/runs/<timestamp>-<scenario>.json`. Failure capsules are stored under `.minecraft-cli/runs/capsules`. Version 2 success output contains only the scenario name, passed action count, duration, and report path.
 
 Useful commands:
 
@@ -59,6 +61,8 @@ minecraft-cli --json visual press-key visual1 enter
 minecraft-cli --json visual scroll visual1 --delta -3
 minecraft-cli --json visual screenshot visual1 --label proof
 ```
+
+Use `--region gui`, `tooltip`, `chat`, `dialog`, or `hud` to create a focused crop. Crops are intersected with the previous-frame change bounds. No crop is generated when comparable frames are unchanged; `--contact-sheet` combines multiple changed HUD regions.
 
 `visual launch` automatically creates or refreshes a version-specific MultiMC instance, installs the matching Fabric Loader and control mod, and waits for the playable screen after connecting. Microsoft mode reuses MultiMC's active account by default; `--profile` only overrides that choice. The user's normal Minecraft instance is not modified.
 

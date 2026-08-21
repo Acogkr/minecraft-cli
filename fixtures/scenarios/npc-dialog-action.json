@@ -1,0 +1,68 @@
+{
+  "version": 2,
+  "name": "npc-dialog-action",
+  "variables": {
+    "actor": "actor-dialog"
+  },
+  "steps": [
+    {
+      "name": "open-cleanup-command",
+      "args": ["visual", "open-chat", "${actor}"]
+    },
+    {
+      "name": "type-cleanup-command",
+      "args": ["visual", "type-text", "${actor}", "/mchelper cleanup"]
+    },
+    {
+      "name": "submit-cleanup-command",
+      "args": ["visual", "press-key", "${actor}", "enter"]
+    },
+    {
+      "name": "open-spawn-command",
+      "args": ["visual", "open-chat", "${actor}"]
+    },
+    {
+      "name": "type-spawn-command",
+      "args": ["visual", "type-text", "${actor}", "/mcdialognpc"]
+    },
+    {
+      "name": "submit-spawn-command",
+      "args": ["visual", "press-key", "${actor}", "enter"]
+    },
+    {
+      "name": "interact-with-dialog-npc",
+      "args": ["actor", "interact-role", "${actor}", "--role", "Minecraft CLI Dialog NPC", "--max-distance", "8"],
+      "retry": 5,
+      "retryDelayMs": 500,
+      "assertions": [
+        { "path": "$.data.transport", "equals": "visual" },
+        { "path": "$.data.result.interacted", "equals": true }
+      ]
+    },
+    {
+      "name": "capture-dialog-action",
+      "args": ["actor", "actions", "${actor}"],
+      "assertions": [
+        { "path": "$.data.nativeDialog", "equals": true },
+        { "path": "$.data.result.actions[0].actionId", "exists": true }
+      ],
+      "capture": {
+        "dialogAction": "$.data.result.actions[0].actionId"
+      }
+    },
+    {
+      "name": "select-dialog-action",
+      "args": ["actor", "click-action", "${actor}", "--action-id", "${dialogAction}"],
+      "assertions": [
+        { "path": "$.data.result.handled", "equals": true }
+      ]
+    },
+    {
+      "name": "verify-returned-to-game",
+      "args": ["visual", "state", "${actor}"],
+      "assertions": [
+        { "path": "$.data.screen", "equals": "game" }
+      ]
+    }
+  ]
+}

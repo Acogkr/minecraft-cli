@@ -12,9 +12,10 @@ Use the globally installed `minecraft-cli` command. Support only `1.20.1`, `1.21
 1. Confirm `minecraft-cli --help` succeeds.
 2. Connect to the user's already-running Paper server. Use offline auth by default or a previously authorized Microsoft account when the server requires it. Do not manage the server.
 3. Use headless sessions for behavior and protocol assertions.
-4. Start visual sessions only for assertions requiring pixels. Use distinct names when several clients must be observed together.
-5. Stop every visual session immediately after its visual checkpoints.
-6. Report a feature as passing only after checking the resulting JSON or PNG.
+4. For NPC-to-native-Dialog flows, use one `actor` name and inspect `actor capabilities`; the CLI selects the available transport and reports unsupported capabilities explicitly.
+5. Start visual sessions only for assertions requiring pixels. Use distinct names when several clients must be observed together.
+6. Stop every visual session immediately after its visual checkpoints.
+7. Report a feature as passing only after checking the resulting JSON or PNG.
 
 ## Scenario First
 
@@ -23,6 +24,8 @@ Use the globally installed `minecraft-cli` command. Support only `1.20.1`, `1.21
 - Set `includeResponse: true` only on the few successful steps whose data is needed for the answer.
 - Use default `when: success` for dependent actions, `when: failure` for diagnostics/screenshots, and `when: always` for session/client cleanup.
 - Run `scenario <file> --dry-run` after creating or changing a scenario, then run it normally.
+- Prefer scenario version 2 for captures, `${variable}` substitution, assertions, retry/repeat, and parallel groups. Version 1 remains supported.
+- On failure, inspect the single capsule path in the summary before requesting broad logs.
 
 ## Authentication
 
@@ -49,6 +52,7 @@ Use the globally installed `minecraft-cli` command. Support only `1.20.1`, `1.21
 ## Visual Discipline
 
 - Use `visual hover-slot` before GUI Lore screenshots.
+- Use `actor interact-role`, `actor actions`, and `actor click-action` when NPC selection opens a native Dialog. Use the action ID returned by `actor actions`, not a translated button label.
 - Use `visual elements`, `visual hover-element`, and `visual click-element` for ordinary buttons and native dialogs. Use GUI-scaled `visual click` only when the screen has no semantic widget text.
 - Use `visual close-screen` for ESC/back behavior.
 - Use `visual open-chat`, `visual hover-chat`, and `visual click-hover` for interactive chat.
@@ -57,6 +61,7 @@ Use the globally installed `minecraft-cli` command. Support only `1.20.1`, `1.21
 - Native data-driven dialogs exist only in Minecraft 1.21.6 and newer, so among the supported versions test them on 1.21.11. Test plugin inventories and custom screens on all three versions.
 - Read `imageAnalysis` before loading a repeated screenshot. Skip exact duplicates and normally skip unchanged routine checkpoints; always inspect the PNG when small text, Lore, color, alignment, or the renderer itself is under test.
 - Read and write evidence in `.minecraft-cli/sessions/<name>` under the plugin project being tested.
+- Use `visual screenshot --region gui|tooltip|chat|dialog|hud`; load only generated crops unless the full frame is the assertion target.
 - Visual instances are created only when concurrent clients need them. Up to eight sessions per version can run with independent slots, ports, tokens, and artifacts, and stopped slots are reused.
 - All managed instances belong to the reusable `minecraft-cli` MultiMC group.
 - Managed visual clients always launch with the Minecraft master volume set to zero.
@@ -67,5 +72,11 @@ Use the globally installed `minecraft-cli` command. Support only `1.20.1`, `1.21
 - Run `artifacts prune --older-than-days <days>` without `--apply` to preview candidates.
 - Never apply pruning before the final report or while evidence is still needed. Use `--apply` only when retention was requested or old generated evidence is demonstrably disposable.
 - Metadata, latest state files, event logs, runtimes, and downloads are protected from this pruning command.
+
+## Optional Paper Probe
+
+- Treat `probe status` with `available: false` as a supported black-box mode, not a test failure.
+- Install the Probe only in an isolated `.minecraft-cli` test server and remove it after the run. Never add it to production plugin catalogs or server packs.
+- Use Probe events for server-side cancellation, permission, dispatch, interaction, transition, and uncaught-exception assertions. TPS/MSPT is failure-diagnostic context only.
 
 Read [commands.md](references/commands.md) when scenario syntax, command syntax, or the full Microsoft login sequence is needed.

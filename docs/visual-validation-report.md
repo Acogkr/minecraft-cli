@@ -1,5 +1,16 @@
 # Visual Validation Report
 
+## 2026-08-22 Scenario v2 and actor validation
+
+- Scenario v2 capture, variable substitution, all documented assertions, retry/repeat, and two-session parallel isolation passed the automated smoke test. The same live NPC-to-Dialog scenario passed three consecutive runs with 10 actions each.
+- A real Paper `1.21.11` server and offline MultiMC client completed role-based NPC interaction, native `minecraft:server_links` Dialog discovery, stable action ID capture, button selection, and return to the game screen.
+- The `1.20.1`, `1.21.4`, and `1.21.11` Fabric control adapters all passed clean builds. Native Dialog capability is explicitly unavailable on the two older versions.
+- Named checkpoint/diff, unchanged compact output, inventory slot changes, event cursors, failure capsules, redaction, changed-region crops, and no-crop-on-unchanged behavior passed their smoke tests.
+- The optional Paper Probe was built and loaded on Paper `1.21.11`. Health, structured events, correlation, permission attachments, command dispatch, state snapshot/restore, and TPS/MSPT diagnostics were exercised. Restart validation produced one plugin-enable event without duplication.
+- The full headless Paper `1.21.11` E2E passed NPC GUI, nested GUI back navigation, exact inventory comparison, chat and HUD events, block/entity actions, item use/drop, respawn, and dimension transition.
+- Live testing exposed two additional issues and both were fixed: `use-on` no longer serializes a full state after opening a GUI, and modern block placement now uses a session interaction sequence instead of Mineflayer's fixed sequence value.
+- A Dialog crop was generated from the real framebuffer under the session screenshot directory. Full-frame screenshots remain available when pixel inspection needs context.
+
 Date: 2026-08-12
 
 Lifecycle audit: 2026-08-17

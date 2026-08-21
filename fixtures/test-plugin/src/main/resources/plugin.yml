@@ -9,6 +9,9 @@ commands:
   mcnpc:
     description: spawn a minecraft-cli test NPC
     usage: /mcnpc spawn
+  mcdialognpc:
+    description: spawn an NPC that opens a native dialog on supported servers
+    usage: /mcdialognpc
   mcgui:
     description: open a minecraft-cli slot test GUI
     usage: /mcgui

@@ -10,8 +10,9 @@ import { requestDaemon, requestDaemonAt, readDaemonState, isProcessAlive, resolv
 import { ensureBaseDirs, getPaths } from "./paths";
 import { Authflow, Titles } from "prismarine-auth";
 import { executeScenario } from "./scenario";
-import { analyzePngChange, latestPng } from "./image-diff";
+import { analyzePngChange, changedPngRegion, createContactSheet, cropPng, intersectRegions, latestPng, type ImageRegion } from "./image-diff";
 import { artifactStatus, pruneArtifacts } from "./artifacts";
+import { diffJson, redactSecrets } from "./json-utils";
 import {
   ensureAccountCache,
   listAccountProfiles,
@@ -100,6 +101,95 @@ function ensureSessionArtifactDirs(workspace: string, sessionName: string) {
 
 function writeJsonFile(file: string, value: unknown) {
   fs.writeFileSync(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+const CHECKPOINT_PARTS = ["core", "window", "ui", "hud", "entities", "inventory", "events"] as const;
+
+function normalizeCheckpointLabel(value: unknown) {
+  const label = String(value ?? "").trim();
+  if (!/^[a-zA-Z0-9_.-]{1,64}$/.test(label)) throw new MinecraftCliError("CHECKPOINT_LABEL_INVALID", "Checkpoint label must be 1-64 letters, numbers, dots, underscores, or hyphens.", 400);
+  return label;
+}
+
+function checkpointDirectory(workspace: string, sessionName: string) {
+  const dir = path.join(ensureSessionArtifactDirs(workspace, sessionName).root, "checkpoints");
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+function checkpointPath(workspace: string, sessionName: string, label: string) {
+  return path.join(checkpointDirectory(workspace, sessionName), `${normalizeCheckpointLabel(label)}.json`);
+}
+
+function parseCheckpointParts(value: unknown) {
+  const parts = value === undefined
+    ? [...CHECKPOINT_PARTS]
+    : String(value).split(",").map(part => part.trim()).filter(Boolean);
+  if (parts.length === 0 || parts.some(part => !(CHECKPOINT_PARTS as readonly string[]).includes(part))) {
+    throw new MinecraftCliError("CHECKPOINT_PART_INVALID", `Checkpoint parts must be comma-separated values from ${CHECKPOINT_PARTS.join(", ")}.`, 400);
+  }
+  return [...new Set(parts)];
+}
+
+async function captureCheckpoint(workspace: string, sessionName: string, label: string, requestedParts?: unknown) {
+  const parts = parseCheckpointParts(requestedParts);
+  const values: Record<string, unknown> = {};
+  let eventCursor: number | undefined;
+  for (const part of parts) {
+    if (part === "events") {
+      const eventState: any = await requestDaemonForCli("GET", `/session/${encodeURIComponent(sessionName)}/events?limit=1`);
+      eventCursor = eventState.nextSequence;
+      values.events = { nextSequence: eventState.nextSequence };
+    } else {
+      values[part] = await requestDaemonForCli("GET", `/session/${encodeURIComponent(sessionName)}/state?part=${encodeURIComponent(part)}`);
+    }
+  }
+  const checkpoint = { version: 1, session: sessionName, label, capturedAt: new Date().toISOString(), parts: values, ...(eventCursor === undefined ? {} : { eventCursor }) };
+  const file = checkpointPath(workspace, sessionName, label);
+  writeJsonFile(file, redactSecrets(checkpoint));
+  return { checkpoint, file };
+}
+
+function readCheckpoint(workspace: string, sessionName: string, label: string) {
+  const file = checkpointPath(workspace, sessionName, label);
+  try {
+    const value = JSON.parse(fs.readFileSync(file, "utf8"));
+    if (value?.version !== 1 || value?.session !== sessionName || !value?.parts) throw new Error("schema mismatch");
+    return { value, file };
+  } catch (error) {
+    throw new MinecraftCliError("CHECKPOINT_NOT_FOUND", `Could not read checkpoint '${label}': ${error instanceof Error ? error.message : String(error)}`, 404);
+  }
+}
+
+async function compareCheckpoint(workspace: string, sessionName: string, label: string, requestedParts?: unknown) {
+  const baseline = readCheckpoint(workspace, sessionName, label);
+  const parts = requestedParts === undefined ? Object.keys(baseline.value.parts) : parseCheckpointParts(requestedParts);
+  const partDiffs: Record<string, unknown> = {};
+  let changeCount = 0;
+  for (const part of parts) {
+    if (!(part in baseline.value.parts)) throw new MinecraftCliError("CHECKPOINT_PART_MISSING", `Checkpoint '${label}' does not contain part '${part}'.`, 400);
+    if (part === "events") {
+      const after = Number(baseline.value.eventCursor ?? baseline.value.parts.events?.nextSequence ?? 0);
+      const events: any = await requestDaemonForCli("GET", `/session/${encodeURIComponent(sessionName)}/events?after=${after}&limit=500`);
+      const changed = events.events.length > 0;
+      if (changed) {
+        partDiffs.events = { changed: true, changeCount: events.events.length, afterSequence: after, nextSequence: events.nextSequence, events: events.events };
+        changeCount += events.events.length;
+      }
+      continue;
+    }
+    const current = await requestDaemonForCli("GET", `/session/${encodeURIComponent(sessionName)}/state?part=${encodeURIComponent(part)}`);
+    const difference: any = diffJson(baseline.value.parts[part], current, 500);
+    if (difference.changed) {
+      if (part === "inventory") {
+        const slots = [...new Set(difference.changes.map((change: any) => /^\$\.slots\[(\d+)\]/.exec(change.path)?.[1]).filter(Boolean).map(Number))];
+        difference.changedSlots = slots;
+      }
+      partDiffs[part] = difference;
+      changeCount += difference.changeCount;
+    }
+  }
+  return { session: sessionName, baseline: label, baselineFile: baseline.file, changed: changeCount > 0, changeCount, parts: partDiffs };
 }
 
 function multiMcMicrosoftProfile(multiMcRoot: string, value: unknown) {
@@ -1047,7 +1137,7 @@ session.command("destroy").description("Disconnect and remove a session.").argum
 session.command("list").description("List sessions.").action(() => run(async () => callDaemon("GET", "/session")));
 
 session.command("state").description("Show one session state or a token-efficient part.").argument("<name>")
-  .option("--part <part>", "core, inventory, entities, window, ui, or events")
+  .option("--part <part>", "core, inventory, entities, window, ui, hud, or events")
   .action((name: string, options) => run(async () => {
     const query = options.part ? `?part=${encodeURIComponent(options.part)}` : "";
     await callDaemon("GET", `/session/${encodeURIComponent(name)}/state${query}`);
@@ -1424,6 +1514,71 @@ session
       printResponse({ ok: true, data: { session: name, file, state } }, { json: program.opts().json });
     })
   );
+
+session
+  .command("checkpoint")
+  .description("Save named core, window, UI, HUD, entity, inventory, and event baselines.")
+  .argument("<name>")
+  .requiredOption("--label <label>", "stable checkpoint name")
+  .option("--parts <parts>", "comma-separated checkpoint parts")
+  .action((name: string, options) => run(async () => {
+    const workspace = getWorkspace();
+    const label = normalizeCheckpointLabel(options.label);
+    const { checkpoint, file } = await captureCheckpoint(workspace, name, label, options.parts);
+    printResponse({ ok: true, data: { session: name, label, parts: Object.keys(checkpoint.parts), eventCursor: checkpoint.eventCursor, file } }, { json: program.opts().json, compactJson: true });
+  }));
+
+session
+  .command("diff")
+  .description("Return only state and event changes since a named checkpoint.")
+  .argument("<name>")
+  .requiredOption("--baseline <label>", "checkpoint name")
+  .option("--parts <parts>", "comma-separated parts to compare")
+  .option("--assert-unchanged", "fail when any selected value changed", false)
+  .action((name: string, options) => run(async () => {
+    const workspace = getWorkspace();
+    const label = normalizeCheckpointLabel(options.baseline);
+    const comparison: any = await compareCheckpoint(workspace, name, label, options.parts);
+    const dirs = ensureSessionArtifactDirs(workspace, name);
+    const reportFile = path.join(dirs.json, `${timestampFilePart()}-${safeFilePart(label)}.state-diff.json`);
+    writeJsonFile(reportFile, redactSecrets(comparison));
+    if (comparison.changed && options.assertUnchanged) {
+      throw new MinecraftCliError("CHECKPOINT_CHANGED", `Session '${name}' changed since checkpoint '${label}'.`, 409, { reportFile, changeCount: comparison.changeCount, parts: Object.keys(comparison.parts) });
+    }
+    if (!comparison.changed) {
+      printResponse({ ok: true, data: { session: name, baseline: label, changed: false, changeCount: 0, reportFile } }, { json: program.opts().json, compactJson: true });
+      return;
+    }
+    const compactParts = Object.fromEntries(Object.entries(comparison.parts).map(([part, value]: [string, any]) => [part, {
+      ...value,
+      ...(Array.isArray(value.changes) ? { changes: value.changes.slice(0, 50) } : {}),
+      ...(Array.isArray(value.events) ? { events: value.events.slice(0, 50) } : {})
+    }]));
+    printResponse({ ok: true, data: { ...comparison, parts: compactParts, reportFile } }, { json: program.opts().json, compactJson: true });
+  }));
+
+session
+  .command("checkpoint-list")
+  .description("List named checkpoints for one session.")
+  .argument("<name>")
+  .action((name: string) => run(async () => {
+    const dir = checkpointDirectory(getWorkspace(), name);
+    const checkpoints = fs.readdirSync(dir, { withFileTypes: true }).filter(entry => entry.isFile() && entry.name.endsWith(".json")).map(entry => entry.name.slice(0, -5)).sort();
+    printResponse({ ok: true, data: { session: name, count: checkpoints.length, checkpoints } }, { json: program.opts().json, compactJson: true });
+  }));
+
+session
+  .command("checkpoint-delete")
+  .description("Delete one named session checkpoint.")
+  .argument("<name>")
+  .requiredOption("--label <label>", "checkpoint name")
+  .action((name: string, options) => run(async () => {
+    const label = normalizeCheckpointLabel(options.label);
+    const file = checkpointPath(getWorkspace(), name, label);
+    if (!fs.existsSync(file)) throw new MinecraftCliError("CHECKPOINT_NOT_FOUND", `Checkpoint '${label}' does not exist.`, 404);
+    fs.rmSync(file, { force: true });
+    printResponse({ ok: true, data: { session: name, label, deleted: true } }, { json: program.opts().json, compactJson: true });
+  }));
 
 session
   .command("inventory-checkpoint")
@@ -1958,6 +2113,45 @@ visual.command("elements").description("List visible Minecraft screen widgets wi
     printResponse({ ok: true, data: state }, { json: program.opts().json });
   }));
 
+visual.command("actions").description("List active screen buttons with stable action ids and indexes.")
+  .argument("<name>")
+  .action((name: string) => run(async () => {
+    const state = await visualRequest(readVisualRuntime(getWorkspace(), name), "/screen/actions");
+    printResponse({ ok: true, data: state }, { json: program.opts().json });
+  }));
+
+visual.command("click-action").description("Click a screen or native Dialog button by action id or button index.")
+  .argument("<name>")
+  .option("--action-id <id>", "action id returned by visual actions")
+  .option("--index <index>", "zero-based active button index", (value) => Number(value))
+  .action((name: string, options) => run(async () => {
+    if (!options.actionId && (!Number.isInteger(options.index) || options.index < 0)) throw new MinecraftCliError("VISUAL_ACTION_REQUIRED", "Provide --action-id or a non-negative --index.", 400);
+    const query = new URLSearchParams();
+    if (options.actionId) query.set("actionId", options.actionId);
+    if (options.index !== undefined) query.set("index", String(options.index));
+    const state = await visualRequest(readVisualRuntime(getWorkspace(), name), `/screen/click-action?${query}`);
+    printResponse({ ok: true, data: state }, { json: program.opts().json });
+  }));
+
+visual.command("entities").description("List entities visible to the rendered client.")
+  .argument("<name>")
+  .action((name: string) => run(async () => {
+    const state = await visualRequest(readVisualRuntime(getWorkspace(), name), "/world/entities");
+    printResponse({ ok: true, data: state }, { json: program.opts().json });
+  }));
+
+visual.command("interact-role").description("Right-click the nearest rendered entity matching visible role text.")
+  .argument("<name>")
+  .requiredOption("--role <text>", "custom name, display name, type, or entity tag")
+  .option("--index <index>", "zero-based role match index", (value) => Number(value), 0)
+  .option("--max-distance <blocks>", "maximum client-side distance", (value) => Number(value), 8)
+  .action((name: string, options) => run(async () => {
+    if (!Number.isInteger(options.index) || options.index < 0 || !Number.isFinite(options.maxDistance) || options.maxDistance <= 0 || options.maxDistance > 128) throw new MinecraftCliError("VISUAL_ENTITY_SELECTOR_INVALID", "Role index or max distance is invalid.", 400);
+    const query = new URLSearchParams({ role: options.role, index: String(options.index), maxDistance: String(options.maxDistance) });
+    const state = await visualRequest(readVisualRuntime(getWorkspace(), name), `/world/interact-role?${query}`);
+    printResponse({ ok: true, data: state }, { json: program.opts().json });
+  }));
+
 for (const target of [
   { command: "click-element", route: "click-element", description: "Click an active visible screen widget by its displayed text." },
   { command: "hover-element", route: "hover-element", description: "Move the virtual cursor over an active visible screen widget by its displayed text." }
@@ -2010,8 +2204,41 @@ visual.command("scroll").description("Scroll the current in-game screen at the v
     printResponse({ ok: true, data: state }, { json: program.opts().json });
   }));
 
+function visualInterestRegions(kind: string, state: any, elements: any, width: number, height: number): ImageRegion[] {
+  const scaleX = width / Math.max(1, Number(state?.guiWidth ?? width));
+  const scaleY = height / Math.max(1, Number(state?.guiHeight ?? height));
+  const cursorX = Number(state?.virtualCursor?.x ?? width / 2);
+  const cursorY = Number(state?.virtualCursor?.y ?? height / 2);
+  const widgets = Array.isArray(elements?.elements) ? elements.elements.filter((element: any) => element.visible !== false && element.width > 0 && element.height >= 0) : [];
+  const widgetRegion: ImageRegion = widgets.length > 0 ? {
+    x: Math.min(...widgets.map((element: any) => element.x)) * scaleX - 24,
+    y: Math.min(...widgets.map((element: any) => element.y)) * scaleY - 24,
+    width: (Math.max(...widgets.map((element: any) => element.x + element.width)) - Math.min(...widgets.map((element: any) => element.x))) * scaleX + 48,
+    height: (Math.max(...widgets.map((element: any) => element.y + element.height)) - Math.min(...widgets.map((element: any) => element.y))) * scaleY + 48,
+    label: kind === "dialog" ? "dialog" : "gui"
+  } : { x: width * 0.08, y: height * 0.05, width: width * 0.84, height: height * 0.9, label: kind === "dialog" ? "dialog" : "gui" };
+  switch (kind) {
+    case "gui":
+    case "dialog": return [widgetRegion];
+    case "tooltip": return [{ x: cursorX - 80, y: cursorY - 180, width: Math.min(440, width), height: Math.min(300, height), label: "tooltip" }];
+    case "chat": return [{ x: 0, y: height * 0.42, width: width * 0.72, height: height * 0.58, label: "chat" }];
+    case "hud": return [
+      { x: 0, y: 0, width, height: height * 0.3, label: "hud-top" },
+      { x: width * 0.2, y: height * 0.25, width: width * 0.6, height: height * 0.5, label: "hud-center" },
+      { x: width * 0.68, y: 0, width: width * 0.32, height: height * 0.8, label: "hud-right" },
+      { x: width * 0.18, y: height * 0.68, width: width * 0.64, height: height * 0.32, label: "hud-bottom" }
+    ];
+    case "full": return [{ x: 0, y: 0, width, height, label: "full" }];
+    case "auto": return state?.screen && state.screen !== "game" ? [widgetRegion] : [];
+    default: throw new MinecraftCliError("VISUAL_REGION_INVALID", "Region must be auto, gui, tooltip, chat, dialog, hud, or full.", 400);
+  }
+}
+
 visual.command("screenshot").argument("<name>")
   .option("--label <label>", "file label", "visual")
+  .option("--region <region>", "auto, gui, tooltip, chat, dialog, hud, or full", "auto")
+  .option("--crop-padding <pixels>", "changed-region padding", (value) => Number(value), 12)
+  .option("--contact-sheet", "combine multiple crops into one PNG", false)
   .option("--no-compare", "skip comparison with the previous session screenshot")
   .action((name: string, options) => run(async () => {
   const workspace = getWorkspace();
@@ -2021,6 +2248,13 @@ visual.command("screenshot").argument("<name>")
   const stamp = timestampFilePart();
   const file = path.join(dirs.screenshots, `${stamp}-${safeFilePart(options.label)}.png`);
   const startedAt = Date.now();
+  if (!Number.isInteger(options.cropPadding) || options.cropPadding < 0 || options.cropPadding > 256) throw new MinecraftCliError("VISUAL_CROP_PADDING_INVALID", "Crop padding must be an integer from 0 to 256.", 400);
+  const visualState: any = await visualRequest(runtime, "/state");
+  let screenElements: any;
+  if (visualState.screen !== "game") {
+    try { screenElements = await visualRequest(runtime, "/screen/elements"); }
+    catch { screenElements = undefined; }
+  }
   const capture = await visualRequest(runtime, `/screenshot?path=${encodeURIComponent(file)}`, 20_000);
   const deadline = Date.now() + 10_000;
   let size = 0;
@@ -2037,12 +2271,121 @@ visual.command("screenshot").argument("<name>")
   } catch (error) {
     imageAnalysis = { error: error instanceof Error ? error.message : String(error) };
   }
-  const metadata = { session: name, capturedAt: new Date().toISOString(), mode: "in_game_framebuffer", capture, imageAnalysis,
+  let cropAnalysis: any;
+  try {
+    const change: any = options.compare ? changedPngRegion(file, previousScreenshot, options.cropPadding) : { comparable: false, changed: true };
+    const interest = visualInterestRegions(options.region, visualState, screenElements, Number(capture.width), Number(capture.height));
+    let regions = interest;
+    if (options.region === "auto" && regions.length === 0 && change.region) regions = [{ ...change.region, label: "changed" }];
+    if (change.comparable && !change.changed) regions = [];
+    else if (change.region && interest.length > 0) regions = interest.map(region => intersectRegions(region, change.region)).filter(Boolean) as ImageRegion[];
+    const cropDir = path.join(dirs.screenshots, "crops");
+    const crops = regions.map((region, index) => cropPng(file, path.join(cropDir, `${stamp}-${safeFilePart(options.label)}-${safeFilePart(region.label ?? String(index + 1))}.png`), region));
+    const contactSheet = options.contactSheet && crops.length > 1
+      ? createContactSheet(crops.map(crop => crop.file), path.join(cropDir, `${stamp}-${safeFilePart(options.label)}-contact-sheet.png`))
+      : undefined;
+    cropAnalysis = { region: options.region, change, generated: crops.length > 0, crops, ...(contactSheet ? { contactSheet } : {}) };
+  } catch (error) {
+    cropAnalysis = { region: options.region, generated: false, error: error instanceof Error ? error.message : String(error) };
+  }
+  const metadata = { session: name, capturedAt: new Date().toISOString(), mode: "in_game_framebuffer", capture, visualState, imageAnalysis, cropAnalysis,
     performance: { durationMs: Date.now() - startedAt, analysisDurationMs: Date.now() - analysisStartedAt, screenshotBytes: size } };
   const metadataFile = path.join(dirs.json, `${stamp}-${safeFilePart(options.label)}.visual.json`);
   writeJsonFile(metadataFile, metadata);
   printResponse({ ok: true, data: { ...metadata, file, metadataFile } }, { json: program.opts().json });
 }));
+
+async function actorCapabilityState(name: string) {
+  const workspace = getWorkspace();
+  let visualState: any;
+  let visualReason = "not_prepared";
+  const runtime = readVisualRuntimeIfExists(workspace, name);
+  if (runtime?.token) {
+    try {
+      visualState = await visualRequest(runtime, "/state", 2000);
+      visualReason = visualState.connected ? "available" : "not_connected";
+    } catch (error) {
+      visualReason = error instanceof Error ? error.message : String(error);
+    }
+  }
+  let headlessState: any;
+  let headlessReason = "daemon_not_running";
+  const daemon = readDaemonState(workspace);
+  if (daemon && isProcessAlive(daemon.pid)) {
+    try {
+      const response: any = await requestDaemonAt(daemon.port, "GET", `/session/${encodeURIComponent(name)}/state?part=core`, undefined, 2000, daemon.token);
+      if (response.ok) { headlessState = response.data; headlessReason = response.data.connected ? "available" : "not_connected"; }
+      else headlessReason = response.error?.code ?? "session_unavailable";
+    } catch (error) {
+      headlessReason = error instanceof Error ? error.message : String(error);
+    }
+  }
+  const visualAvailable = Boolean(visualState?.connected && visualState?.capabilities?.npcRoleInteraction);
+  const headlessAvailable = Boolean(headlessState?.connected);
+  return {
+    name,
+    transports: {
+      visual: { available: visualAvailable, reason: visualReason, version: runtime?.version, screen: visualState?.screen, capabilities: visualState?.capabilities ?? {} },
+      headless: { available: headlessAvailable, reason: headlessReason, version: headlessState?.server?.version }
+    },
+    capabilities: {
+      npcRoleInteraction: visualAvailable ? { available: true, transport: "visual" } : headlessAvailable ? { available: true, transport: "headless" } : { available: false, reason: "no_connected_transport" },
+      screenActions: visualState?.connected && visualState?.capabilities?.screenActions ? { available: true, transport: "visual" } : { available: false, reason: "visual_transport_required" },
+      nativeDialog: visualState?.connected && visualState?.capabilities?.nativeDialog ? { available: true, transport: "visual" } : { available: false, reason: runtime?.version === "1.21.11" ? "visual_transport_unavailable" : "requires_visual_1.21.11" },
+      framebuffer: visualState?.connected && visualState?.capabilities?.framebuffer ? { available: true, transport: "visual" } : { available: false, reason: "visual_transport_required" }
+    }
+  };
+}
+
+const actor = program.command("actor").description("Use one capability-aware role across headless and rendered transports.");
+
+actor.command("capabilities").argument("<name>").action((name: string) => run(async () => {
+  printResponse({ ok: true, data: await actorCapabilityState(name) }, { json: program.opts().json, compactJson: true });
+}));
+
+actor.command("interact-role").description("Right-click a role using visual transport first, then headless fallback.")
+  .argument("<name>")
+  .requiredOption("--role <text>")
+  .option("--index <index>", "zero-based role match", (value) => Number(value), 0)
+  .option("--max-distance <blocks>", "maximum distance", (value) => Number(value), 8)
+  .action((name: string, options) => run(async () => {
+    const capabilities: any = await actorCapabilityState(name);
+    const selected = capabilities.capabilities.npcRoleInteraction;
+    if (!selected.available) throw new MinecraftCliError("ACTOR_CAPABILITY_UNAVAILABLE", "No connected transport can interact with an NPC role.", 409, capabilities);
+    if (selected.transport === "visual") {
+      const runtime = readVisualRuntime(getWorkspace(), name);
+      const query = new URLSearchParams({ role: options.role, index: String(options.index), maxDistance: String(options.maxDistance) });
+      const result = await visualRequest(runtime, `/world/interact-role?${query}`);
+      printResponse({ ok: true, data: { actor: name, transport: "visual", result } }, { json: program.opts().json, compactJson: true });
+      return;
+    }
+    const result = await requestDaemonForCli("POST", `/session/${encodeURIComponent(name)}/interact`, { role: options.role, nearest: true, maxDistance: options.maxDistance, method: "at" });
+    printResponse({ ok: true, data: { actor: name, transport: "headless", result } }, { json: program.opts().json, compactJson: true });
+  }));
+
+actor.command("actions").description("List actionable buttons on the rendered actor's current screen.")
+  .argument("<name>")
+  .action((name: string) => run(async () => {
+    const capabilities: any = await actorCapabilityState(name);
+    if (!capabilities.capabilities.screenActions.available) throw new MinecraftCliError("ACTOR_CAPABILITY_UNAVAILABLE", "Screen actions require a connected visual actor.", 409, capabilities);
+    const result = await visualRequest(readVisualRuntime(getWorkspace(), name), "/screen/actions");
+    printResponse({ ok: true, data: { actor: name, transport: "visual", nativeDialog: capabilities.capabilities.nativeDialog.available, result } }, { json: program.opts().json, compactJson: true });
+  }));
+
+actor.command("click-action").description("Click a rendered screen or native Dialog button by action id or index.")
+  .argument("<name>")
+  .option("--action-id <id>")
+  .option("--index <index>", "zero-based active button index", (value) => Number(value))
+  .action((name: string, options) => run(async () => {
+    const capabilities: any = await actorCapabilityState(name);
+    if (!capabilities.capabilities.screenActions.available) throw new MinecraftCliError("ACTOR_CAPABILITY_UNAVAILABLE", "Dialog and screen actions require a connected visual actor.", 409, capabilities);
+    if (!options.actionId && (!Number.isInteger(options.index) || options.index < 0)) throw new MinecraftCliError("ACTOR_ACTION_REQUIRED", "Provide --action-id or a non-negative --index.", 400);
+    const query = new URLSearchParams();
+    if (options.actionId) query.set("actionId", options.actionId);
+    if (options.index !== undefined) query.set("index", String(options.index));
+    const result = await visualRequest(readVisualRuntime(getWorkspace(), name), `/screen/click-action?${query}`);
+    printResponse({ ok: true, data: { actor: name, transport: "visual", nativeDialog: capabilities.capabilities.nativeDialog.available, result } }, { json: program.opts().json, compactJson: true });
+  }));
 
 program
   .command("scenario")
@@ -2051,7 +2394,7 @@ program
   .option("--full", "return every compact step response instead of a summary", false)
   .option("--dry-run", "validate and list steps without running them", false)
   .action((file: string, options) => run(async () => {
-    const response = executeScenario({
+    const response = await executeScenario({
       file,
       workspace: getWorkspace(),
       cliFile: path.resolve(process.argv[1]),
@@ -2061,6 +2404,107 @@ program
     if (!response.ok) process.exitCode = 2;
     printResponse(response, { json: program.opts().json, compactJson: true });
   }));
+
+const probe = program.command("probe").description("Inspect the optional localhost Paper test probe.");
+
+function readProbeRuntime() {
+  const file = path.join(getPaths(getWorkspace()).runtime, "probe.json");
+  if (!fs.existsSync(file)) return { available: false as const, reason: "not_configured", file };
+  let runtime: any;
+  try { runtime = JSON.parse(fs.readFileSync(file, "utf8")); } catch { return { available: false as const, reason: "runtime_invalid", file }; }
+  if (!Number.isInteger(runtime.port) || runtime.port < 1 || runtime.port > 65535 || typeof runtime.token !== "string") {
+    return { available: false as const, reason: "runtime_invalid", file };
+  }
+  return { available: true as const, file, runtime };
+}
+
+async function requestProbe(method: string, route: string, body?: unknown, softUnavailable = false) {
+  const configured = readProbeRuntime();
+  if (!configured.available) {
+    if (softUnavailable) return { available: false, reason: configured.reason, file: configured.file };
+    throw new MinecraftCliError("PAPER_PROBE_UNAVAILABLE", `Paper Probe is unavailable: ${configured.reason}.`, 503, { reason: configured.reason });
+  }
+  const { runtime } = configured;
+  try {
+    const controller = new AbortController();
+    const timeout = setTimeout(() => controller.abort(), 5000);
+    const response = await fetch(`http://127.0.0.1:${runtime.port}${route}`, {
+      method,
+      headers: { Authorization: runtime.token, ...(body === undefined ? {} : { "Content-Type": "application/json" }) },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      signal: controller.signal
+    });
+    clearTimeout(timeout);
+    const responseBody: any = await response.json();
+    if (!response.ok || !responseBody?.ok) throw new MinecraftCliError("PAPER_PROBE_REQUEST_FAILED", responseBody?.error ?? `Probe returned HTTP ${response.status}.`, 502, redactSecrets(responseBody));
+    return { available: true, endpoint: `127.0.0.1:${runtime.port}`, ...redactSecrets(responseBody) as any };
+  } catch (error) {
+    if (softUnavailable) return { available: false, reason: "unreachable", endpoint: `127.0.0.1:${runtime.port}`, error: error instanceof Error ? error.message : String(error) };
+    throw error;
+  }
+}
+
+probe.command("status").description("Report probe availability without failing when it is not installed.").action(() => run(async () => {
+  const result = await requestProbe("GET", "/health", undefined, true);
+  printResponse({ ok: true, data: result }, { json: program.opts().json, compactJson: true });
+}));
+
+probe.command("events").description("Read structured probe observations after a sequence cursor.")
+  .option("--after <sequence>", "only observations after this sequence", (value) => Number(value), 0)
+  .option("--limit <count>", "maximum observations", (value) => Number(value), 100)
+  .option("--correlation <id>", "scenario correlation id")
+  .action((options) => run(async () => {
+    const query = new URLSearchParams({ after: String(options.after), limit: String(options.limit) });
+    if (options.correlation) query.set("correlation", options.correlation);
+    const result = await requestProbe("GET", `/events?${query}`);
+    printResponse({ ok: true, data: result }, { json: program.opts().json, compactJson: true });
+  }));
+
+probe.command("correlate").description("Associate one player UUID with a scenario id.")
+  .requiredOption("--player-uuid <uuid>")
+  .requiredOption("--scenario <id>")
+  .action((options) => run(async () => {
+    const result = await requestProbe("POST", "/correlation", { playerUuid: options.playerUuid, scenarioId: options.scenario });
+    printResponse({ ok: true, data: result }, { json: program.opts().json, compactJson: true });
+  }));
+
+probe.command("command").description("Dispatch a player command and return permission and dispatch results.")
+  .requiredOption("--player-uuid <uuid>")
+  .requiredOption("--command <command>")
+  .option("--permission <node>")
+  .action((options) => run(async () => {
+    const result = await requestProbe("POST", "/command", { playerUuid: options.playerUuid, command: options.command, permission: options.permission });
+    printResponse({ ok: true, data: result }, { json: program.opts().json, compactJson: true });
+  }));
+
+probe.command("snapshot").description("Capture restorable player test state in probe memory.")
+  .requiredOption("--player-uuid <uuid>")
+  .action((options) => run(async () => {
+    const result = await requestProbe("POST", "/snapshot", { playerUuid: options.playerUuid });
+    printResponse({ ok: true, data: result }, { json: program.opts().json, compactJson: true });
+  }));
+
+probe.command("restore").description("Restore and consume one probe player snapshot.")
+  .requiredOption("--snapshot <id>")
+  .action((options) => run(async () => {
+    const result = await requestProbe("POST", "/restore", { snapshotId: options.snapshot });
+    printResponse({ ok: true, data: result }, { json: program.opts().json, compactJson: true });
+  }));
+
+probe.command("permissions").description("Set permission attachments owned only by the test probe.")
+  .requiredOption("--player-uuid <uuid>")
+  .option("--allow <node>", "permission to allow; repeatable", collect, [])
+  .option("--deny <node>", "permission to deny; repeatable", collect, [])
+  .action((options) => run(async () => {
+    const permissions = Object.fromEntries([...(options.allow ?? []).map((node: string) => [node, true]), ...(options.deny ?? []).map((node: string) => [node, false])]);
+    const result = await requestProbe("POST", "/permissions", { playerUuid: options.playerUuid, permissions });
+    printResponse({ ok: true, data: result }, { json: program.opts().json, compactJson: true });
+  }));
+
+probe.command("diagnostics").description("Read TPS/MSPT only for failure diagnostics.").action(() => run(async () => {
+  const result = await requestProbe("GET", "/diagnostics", undefined, true);
+  printResponse({ ok: true, data: result }, { json: program.opts().json, compactJson: true });
+}));
 
 const artifacts = program.command("artifacts").description("Inspect and safely prune generated test evidence.");
 

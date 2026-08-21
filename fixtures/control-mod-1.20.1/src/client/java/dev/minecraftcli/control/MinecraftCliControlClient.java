@@ -10,6 +10,8 @@ import java.net.InetSocketAddress;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
@@ -20,8 +22,12 @@ import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
 import net.minecraft.client.gui.components.AbstractWidget;
+import net.minecraft.client.gui.components.AbstractButton;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
+import net.minecraft.world.InteractionHand;
+import net.minecraft.world.entity.Entity;
+import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.inventory.ClickType;
 import org.lwjgl.glfw.GLFW;
 
@@ -56,6 +62,10 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
       server.createContext("/screen/elements", exchange -> respondAuthorized(exchange, this::screenElements));
       server.createContext("/screen/click-element", exchange -> respondAuthorized(exchange, () -> targetElement(queryRequired(exchange, "text"), queryIntDefault(exchange, "index", 0), queryBoolean(exchange, "exact"), true)));
       server.createContext("/screen/hover-element", exchange -> respondAuthorized(exchange, () -> targetElement(queryRequired(exchange, "text"), queryIntDefault(exchange, "index", 0), queryBoolean(exchange, "exact"), false)));
+      server.createContext("/screen/actions", exchange -> respondAuthorized(exchange, this::screenActions));
+      server.createContext("/screen/click-action", exchange -> respondAuthorized(exchange, () -> clickAction(query(exchange, "actionId"), queryIntDefault(exchange, "index", -1))));
+      server.createContext("/world/entities", exchange -> respondAuthorized(exchange, this::worldEntities));
+      server.createContext("/world/interact-role", exchange -> respondAuthorized(exchange, () -> interactRole(queryRequired(exchange, "role"), queryIntDefault(exchange, "index", 0), queryDoubleDefault(exchange, "maxDistance", 8))));
       server.createContext("/screen/type", exchange -> respondAuthorized(exchange, () -> typeText(queryRequired(exchange, "text"))));
       server.createContext("/screen/key", exchange -> respondAuthorized(exchange, () -> pressKey(queryRequired(exchange, "key"), queryIntDefault(exchange, "modifiers", 0))));
       server.createContext("/screen/scroll", exchange -> respondAuthorized(exchange, () -> scroll(queryDouble(exchange, "delta"))));
@@ -97,6 +107,18 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
     result.addProperty("connected", client.getConnection() != null);
     result.addProperty("guiWidth", client.getWindow().getGuiScaledWidth());
     result.addProperty("guiHeight", client.getWindow().getGuiScaledHeight());
+    JsonObject capabilities = new JsonObject();
+    capabilities.addProperty("npcRoleInteraction", true);
+    capabilities.addProperty("screenActions", true);
+    capabilities.addProperty("nativeDialog", false);
+    capabilities.addProperty("framebuffer", true);
+    result.add("capabilities", capabilities);
+    if (VirtualCursor.active()) {
+      JsonObject cursor = new JsonObject();
+      cursor.addProperty("x", VirtualCursor.x());
+      cursor.addProperty("y", VirtualCursor.y());
+      result.add("virtualCursor", cursor);
+    }
     if (client.player != null) result.addProperty("player", client.player.getGameProfile().getName());
     return result;
   }
@@ -290,6 +312,111 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
     });
   }
 
+  private JsonObject screenActions() throws Exception {
+    return onClient(() -> {
+      if (client.screen == null) throw new IllegalStateException("No screen is open");
+      JsonObject result = state();
+      result.addProperty("title", client.screen.getTitle().getString());
+      JsonArray actions = new JsonArray();
+      int childIndex = 0;
+      int actionIndex = 0;
+      for (var child : client.screen.children()) {
+        if (child instanceof AbstractButton button && button.visible && button.active) {
+          JsonObject value = widgetSummary(button, childIndex);
+          value.addProperty("actionIndex", actionIndex++);
+          value.addProperty("actionId", "button:" + childIndex);
+          actions.add(value);
+        }
+        childIndex++;
+      }
+      result.add("actions", actions);
+      return result;
+    });
+  }
+
+  private JsonObject clickAction(String actionId, int requestedIndex) throws Exception {
+    return onClient(() -> {
+      if (client.screen == null) throw new IllegalStateException("No screen is open");
+      int wantedChild = actionId != null && actionId.startsWith("button:") ? Integer.parseInt(actionId.substring(7)) : -1;
+      int childIndex = 0;
+      int actionIndex = 0;
+      for (var child : client.screen.children()) {
+        if (child instanceof AbstractButton button && button.visible && button.active) {
+          if ((wantedChild >= 0 && childIndex == wantedChild) || (wantedChild < 0 && actionIndex == requestedIndex)) {
+            double x = button.getX() + button.getWidth() / 2.0;
+            double y = button.getY() + button.getHeight() / 2.0;
+            double scale = client.getWindow().getGuiScale();
+            VirtualCursor.set(x * scale, y * scale);
+            boolean handled = client.screen.mouseClicked(x, y, 0);
+            JsonObject result = state();
+            JsonObject value = widgetSummary(button, childIndex);
+            value.addProperty("actionIndex", actionIndex);
+            value.addProperty("actionId", "button:" + childIndex);
+            result.add("action", value);
+            result.addProperty("handled", handled);
+            return result;
+          }
+          actionIndex++;
+        }
+        childIndex++;
+      }
+      throw new IllegalArgumentException("Dialog action not found");
+    });
+  }
+
+  private JsonObject worldEntities() throws Exception {
+    return onClient(() -> {
+      if (client.player == null || client.level == null) throw new IllegalStateException("Player is not connected");
+      JsonObject result = state();
+      JsonArray entities = new JsonArray();
+      for (Entity entity : client.level.entitiesForRendering()) if (entity != client.player) entities.add(entitySummary(entity));
+      result.add("entities", entities);
+      return result;
+    });
+  }
+
+  private JsonObject interactRole(String role, int requestedIndex, double maxDistance) throws Exception {
+    if (requestedIndex < 0 || maxDistance <= 0 || maxDistance > 128) throw new IllegalArgumentException("Invalid entity selector");
+    return onClient(() -> {
+      if (client.player == null || client.level == null || client.gameMode == null) throw new IllegalStateException("Player is not connected");
+      List<Entity> matches = new ArrayList<>();
+      for (Entity entity : client.level.entitiesForRendering()) if (entity != client.player && client.player.distanceTo(entity) <= maxDistance && entityMatches(entity, role)) matches.add(entity);
+      matches.sort(java.util.Comparator.comparingDouble(client.player::distanceTo));
+      if (requestedIndex >= matches.size()) throw new IllegalArgumentException("No visible entity matched role: " + role);
+      Entity target = matches.get(requestedIndex);
+      var atResult = client.gameMode.interactAt(client.player, target, new EntityHitResult(target), InteractionHand.MAIN_HAND);
+      var resultValue = client.gameMode.interact(client.player, target, InteractionHand.MAIN_HAND);
+      client.player.swing(InteractionHand.MAIN_HAND);
+      JsonObject result = state();
+      result.add("entity", entitySummary(target));
+      result.addProperty("interacted", true);
+      result.addProperty("interactAt", atResult.toString());
+      result.addProperty("interact", resultValue.toString());
+      return result;
+    });
+  }
+
+  private JsonObject entitySummary(Entity entity) {
+    JsonObject value = new JsonObject();
+    value.addProperty("id", entity.getId());
+    value.addProperty("uuid", entity.getUUID().toString());
+    value.addProperty("type", entity.getType().toString());
+    value.addProperty("name", entity.getName().getString());
+    value.addProperty("displayName", entity.getDisplayName().getString());
+    if (entity.getCustomName() != null) value.addProperty("customName", entity.getCustomName().getString());
+    value.addProperty("distance", client.player == null ? -1 : client.player.distanceTo(entity));
+    return value;
+  }
+
+  private boolean entityMatches(Entity entity, String role) {
+    String needle = role.toLowerCase(java.util.Locale.ROOT);
+    return entity.getName().getString().toLowerCase(java.util.Locale.ROOT).contains(needle)
+      || entity.getDisplayName().getString().toLowerCase(java.util.Locale.ROOT).contains(needle)
+      || (entity.getCustomName() != null && entity.getCustomName().getString().toLowerCase(java.util.Locale.ROOT).contains(needle))
+      || entity.getType().toString().toLowerCase(java.util.Locale.ROOT).contains(needle)
+      || entity.getTags().stream().anyMatch(tag -> tag.toLowerCase(java.util.Locale.ROOT).contains(needle));
+  }
+
   private static JsonObject widgetSummary(AbstractWidget widget, int index) {
     JsonObject value = new JsonObject();
     value.addProperty("index", index);
@@ -386,6 +513,7 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
   private static int queryInt(HttpExchange exchange, String name) { return Integer.parseInt(query(exchange, name)); }
   private static int queryIntDefault(HttpExchange exchange, String name, int fallback) { String value = query(exchange, name); return value == null ? fallback : Integer.parseInt(value); }
   private static double queryDouble(HttpExchange exchange, String name) { return Double.parseDouble(queryRequired(exchange, name)); }
+  private static double queryDoubleDefault(HttpExchange exchange, String name, double fallback) { String value = query(exchange, name); return value == null ? fallback : Double.parseDouble(value); }
   private static String queryRequired(HttpExchange exchange, String name) { String value = query(exchange, name); if (value == null) throw new IllegalArgumentException(name + " is required"); return value; }
   private static boolean queryBoolean(HttpExchange exchange, String name) { return Boolean.parseBoolean(query(exchange, name)); }
   private static int keyCode(String key) {

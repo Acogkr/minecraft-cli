@@ -1,34 +1,38 @@
 {
-  "version": 1,
+  "version": 2,
   "name": "gui-smoke",
   "timeoutMs": 120000,
+  "variables": {
+    "bot": "bot1"
+  },
   "steps": [
     {
       "name": "connect-headless",
-      "args": ["session", "create", "bot1", "--username", "BotOne", "--host", "127.0.0.1", "--port", "25565", "--version", "1.21.4", "--connect"]
+      "args": ["session", "create", "${bot}", "--username", "BotOne", "--host", "127.0.0.1", "--port", "25565", "--version", "1.21.4", "--connect"],
+      "retry": 2,
+      "retryDelayMs": 500
     },
     {
       "name": "open-gui",
-      "args": ["session", "command", "bot1", "mcgui"]
+      "args": ["session", "command", "${bot}", "mcgui"]
     },
     {
       "name": "assert-paper",
-      "args": ["session", "expect-window", "bot1", "--slot", "10", "--item", "paper", "--timeout-ticks", "80"]
+      "args": ["session", "expect-window", "${bot}", "--slot", "10", "--item", "paper", "--timeout-ticks", "80"]
     },
     {
       "name": "window-result",
-      "args": ["session", "state", "bot1", "--part", "window"],
-      "includeResponse": true
-    },
-    {
-      "name": "failure-events",
-      "args": ["session", "events", "bot1", "--limit", "20"],
-      "when": "failure",
-      "includeResponse": true
+      "args": ["session", "state", "${bot}", "--part", "window"],
+      "assertions": [
+        { "path": "$.data.window", "exists": true }
+      ],
+      "capture": {
+        "windowTitle": "$.data.window.title"
+      }
     },
     {
       "name": "destroy-session",
-      "args": ["session", "destroy", "bot1"],
+      "args": ["session", "destroy", "${bot}"],
       "when": "always"
     },
     {

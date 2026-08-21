@@ -3,7 +3,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { PNG } from "pngjs";
-import { analyzePngChange, latestPng } from "../dist/image-diff.js";
+import { analyzePngChange, changedPngRegion, createContactSheet, cropPng, latestPng } from "../dist/image-diff.js";
 
 const root = fs.mkdtempSync(path.join(os.tmpdir(), "minecraft-cli-image-diff-"));
 
@@ -43,6 +43,15 @@ try {
   assert.equal(difference.exactMatch, false);
   assert.equal(difference.changedSampleRatio, 0.5);
   assert.equal(difference.meaningfullyChanged, true);
+  const bounds = changedPngRegion(changed, first, 0);
+  assert.deepEqual(bounds.region, { x: 0, y: 0, width: 32, height: 36 });
+  assert.equal(changedPngRegion(identical, first).changed, false);
+  const crop = cropPng(changed, path.join(root, "crops", "left.png"), { x: 0, y: 0, width: 32, height: 36, label: "left" });
+  assert.equal(crop.width, 32);
+  assert.equal(crop.height, 36);
+  const sheet = createContactSheet([crop.file, crop.file], path.join(root, "crops", "sheet.png"));
+  assert.equal(sheet.count, 2);
+  assert.equal(sheet.width, 64);
   assert.equal(latestPng(root), changed);
 } finally {
   fs.rmSync(root, { recursive: true, force: true });

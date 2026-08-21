@@ -1,0 +1,5 @@
+name: MinecraftCliPaperProbe
+version: 0.1.0
+main: dev.minecraftcli.probe.MinecraftCliPaperProbe
+api-version: "1.20"
+description: Optional localhost-only structured observer for isolated minecraft-cli tests.

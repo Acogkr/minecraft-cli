@@ -104,27 +104,31 @@ minecraft-cli --json scenario docs/scenario.example.json --dry-run
 minecraft-cli --json scenario docs/scenario.example.json
 ```
 
-간단한 형식은 다음과 같습니다.
+새 시나리오는 `version: 2`를 사용합니다. 이전 `version: 1` 파일도 그대로 실행됩니다.
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "name": "gui-smoke",
+  "variables": { "session": "bot1" },
   "steps": [
-    { "name": "open", "args": ["session", "command", "bot1", "mcgui"] },
-    { "name": "check", "args": ["session", "expect-window", "bot1", "--slot", "10", "--item", "paper"] },
-    { "name": "result", "args": ["session", "state", "bot1", "--part", "window"], "includeResponse": true },
-    { "name": "errors", "args": ["session", "events", "bot1", "--limit", "20"], "when": "failure", "includeResponse": true },
-    { "name": "cleanup", "args": ["session", "destroy", "bot1"], "when": "always" }
+    { "name": "open", "args": ["session", "command", "${session}", "mcgui"], "retry": 2 },
+    {
+      "name": "read-window",
+      "args": ["session", "state", "${session}", "--part", "window"],
+      "assertions": [{ "path": "$.data.window.slots[10].name", "contains": "paper" }],
+      "capture": { "title": "$.data.window.title" }
+    },
+    { "name": "cleanup", "args": ["session", "destroy", "${session}"], "when": "always" }
   ]
 }
 ```
 
-- 기본 `when`은 `success`라서 앞 단계가 실패하면 불필요한 후속 단계는 건너뜁니다.
-- `failure`는 실패 진단과 스크린샷에, `always`는 세션 종료와 정리에 사용합니다.
-- 성공 응답 중 AI가 바로 읽어야 하는 것만 `includeResponse: true`로 지정합니다.
-- 모든 응답이 꼭 필요할 때만 `--full`을 사용합니다.
-- 시나리오는 `status`, `session`, `visual`, `cleanup`만 실행할 수 있으며 자기 자신이나 인증 창을 재귀적으로 실행하지 않습니다.
+- `${변수}`는 초기 변수나 `capture` 결과를 다음 단계에 전달합니다.
+- assertion은 `equals`, `notEquals`, `contains`, `matches`, `exists`, `gt`, `gte`, `lt`, `lte`를 지원합니다.
+- 단계별 `retry`, `repeat`와 2~8개 작업의 `parallel` 그룹을 사용할 수 있습니다.
+- 실패하면 명령, assertion, 상태 diff, 이벤트 구간, 데몬·Probe 상태를 담은 capsule JSON이 하나 생성됩니다. 비밀값은 마스킹됩니다.
+- 시나리오는 `status`, `session`, `visual`, `actor`, `probe`, `cleanup`만 실행할 수 있습니다.
 - `--compact` 명령과 시나리오 결과는 공백 없는 한 줄 JSON으로 출력됩니다. 저장되는 보고서는 사람이 확인하기 쉽도록 들여쓰기를 유지합니다.
 
 ## 실제 화면 확인하기
@@ -158,6 +162,17 @@ minecraft-cli --compact --json visual scroll visual1 --delta -3
 ```
 
 네이티브 데이터 기반 다이얼로그는 Minecraft `1.21.6`에 추가됐으므로 지원 버전 중에서는 `1.21.11`에서만 검사할 수 있습니다. `1.20.1`과 `1.21.4`의 플러그인 GUI나 커스텀 화면은 같은 위젯·좌표·키 입력 API로 검사합니다.
+
+NPC와 다이얼로그를 한 흐름에서 다룰 때는 `actor` 명령을 사용합니다. 연결된 화면 세션을 우선 사용하고, NPC 상호작용은 필요하면 같은 이름의 headless 세션으로 대체합니다. 지원되지 않는 기능은 건너뛰지 않고 capability 오류로 반환합니다.
+
+```powershell
+minecraft-cli --compact --json actor capabilities visual1
+minecraft-cli --compact --json actor interact-role visual1 --role "상점 NPC"
+minecraft-cli --compact --json actor actions visual1
+minecraft-cli --compact --json actor click-action visual1 --action-id button:2
+```
+
+실제 회귀 예제는 `fixtures/scenarios/npc-dialog-action.json`에 있습니다.
 
 화면 클라이언트는 MultiMC에 이미 로그인된 기본 계정을 그대로 사용할 수 있습니다.
 
@@ -215,6 +230,15 @@ JSON, 메타데이터, 스크린샷은 테스트 중인 프로젝트 안에 세�
 minecraft-cli --compact --json session state bot1 --part core
 minecraft-cli --compact --json session state bot1 --part window
 minecraft-cli --compact --json session state bot1 --part ui
+minecraft-cli --compact --json session state bot1 --part hud
+```
+
+여러 상태를 기준선 하나로 묶어 바뀐 필드, 슬롯, 이벤트만 받을 수 있습니다.
+
+```powershell
+minecraft-cli --compact --json session checkpoint bot1 --label before --parts core,window,ui,hud,entities,inventory,events
+minecraft-cli --compact --json session diff bot1 --baseline before
+minecraft-cli --compact --json session checkpoint-delete bot1 --label before
 ```
 
 인벤토리는 빈 칸을 포함한 전체 슬롯과 아이템 메타데이터를 체크포인트로 저장하고 정확히 비교할 수 있습니다.
@@ -239,15 +263,28 @@ minecraft-cli --compact --json session events bot1 --after 42 --limit 20
 
 `message`와 그 문자열 별칭은 하나의 이벤트로 합쳐 저장하며, 의미가 같은 타이틀·보스바·스코어보드 원본 패킷도 중복 기록하지 않습니다.
 
-`visual screenshot`은 같은 세션의 직전 PNG와 자동 비교합니다. 결과의 `imageAnalysis`에는 SHA-256, 정확히 같은지 여부, 표본 변화율과 `meaningfullyChanged`가 포함됩니다. 동일한 체크포인트를 반복 확인할 때 변화가 없으면 AI가 이미지를 다시 읽지 않아도 됩니다.
+`visual screenshot`은 같은 세션의 직전 PNG와 자동 비교합니다. GUI, Lore tooltip, 채팅, 다이얼로그, HUD의 관심 영역과 실제 변화 영역이 겹치는 부분만 crop으로 저장하며, 변화가 없으면 crop을 만들지 않습니다.
 
 ```powershell
-minecraft-cli --compact --json visual screenshot visual1 --label menu
+minecraft-cli --compact --json visual screenshot visual1 --label menu --region gui
+minecraft-cli --compact --json visual screenshot visual1 --label dialog --region dialog --contact-sheet
 ```
 
 작은 글자, Lore, 색상처럼 미세한 차이가 테스트 대상이면 변화 판정과 관계없이 PNG를 직접 확인해야 합니다. 비교가 필요 없는 캡처에는 `--no-compare`를 사용할 수 있습니다.
 
 Codex에서는 함께 설치되는 `$minecraft-plugin-test` Skill이 이 흐름과 명령을 사용할 수 있습니다.
+
+## 선택형 Paper Probe
+
+격리된 테스트 서버에는 `fixtures/paper-probe`의 Probe를 선택 설치할 수 있습니다. join/quit, 명령, 인벤토리, 채팅, 상호작용, 이동·사망과 플러그인 예외를 assertion용 구조로 관측하고 테스트 상태를 제한적으로 복원합니다. Probe가 없으면 오류 대신 `available: false`로 정상 저하됩니다.
+
+```powershell
+minecraft-cli --compact --json probe status
+minecraft-cli --compact --json probe events --after 0 --limit 20
+minecraft-cli --compact --json probe diagnostics
+```
+
+Probe는 `.minecraft-cli` 테스트 서버 전용이며 운영 서버나 서버팩에 등록하지 않습니다.
 
 ## 결과 파일 관리
 

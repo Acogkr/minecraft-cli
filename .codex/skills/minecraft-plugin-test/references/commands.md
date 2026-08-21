@@ -4,14 +4,14 @@ Token-efficient scenario for three or more actions:
 
 ```json
 {
-  "version": 1,
+  "version": 2,
   "name": "plugin-smoke",
+  "variables": { "bot": "bot1" },
   "steps": [
-    { "name": "open", "args": ["session", "command", "bot1", "mcgui"] },
-    { "name": "assert", "args": ["session", "expect-window", "bot1", "--slot", "10", "--item", "paper"] },
-    { "name": "window", "args": ["session", "state", "bot1", "--part", "window"], "includeResponse": true },
-    { "name": "failure-events", "args": ["session", "events", "bot1", "--limit", "20"], "when": "failure", "includeResponse": true },
-    { "name": "cleanup", "args": ["session", "destroy", "bot1"], "when": "always" }
+    { "name": "open", "args": ["session", "command", "${bot}", "mcgui"], "retry": 2 },
+    { "name": "assert", "args": ["session", "expect-window", "${bot}", "--slot", "10", "--item", "paper"] },
+    { "name": "window", "args": ["session", "state", "${bot}", "--part", "window"], "capture": { "title": "$.data.window.title" }, "assertions": [{ "path": "$.ok", "equals": true }] },
+    { "name": "cleanup", "args": ["session", "destroy", "${bot}"], "when": "always" }
   ]
 }
 ```
@@ -61,6 +61,27 @@ minecraft-cli --compact --json visual move-cursor visual1 --x 280 --y 160
 minecraft-cli --compact --json visual scroll visual1 --delta -3
 ```
 
+NPC to native Dialog flow:
+
+```powershell
+minecraft-cli --compact --json actor capabilities visual1
+minecraft-cli --compact --json actor interact-role visual1 --role "Shop NPC"
+minecraft-cli --compact --json actor actions visual1
+minecraft-cli --compact --json actor click-action visual1 --action-id button:2
+```
+
+Use `fixtures/scenarios/npc-dialog-action.json` as the regression pattern. Actor capability failures are explicit; do not skip them.
+
+Named state diff and visual crops:
+
+```powershell
+minecraft-cli --compact --json session checkpoint bot1 --label before --parts core,window,ui,hud,entities,inventory,events
+minecraft-cli --compact --json session diff bot1 --baseline before
+minecraft-cli --compact --json visual screenshot visual1 --label dialog --region dialog
+```
+
+Unchanged diffs are compact and unchanged images produce no crop. Failure capsules are saved under `.minecraft-cli/runs/capsules`.
+
 Prefer semantic element commands. Coordinate clicking is the fallback for widgets without text and custom-drawn screens. Native data-driven dialogs are available on supported version `1.21.11`, not `1.20.1` or `1.21.4`.
 
 Exact inventory and transfer assertions:
@@ -99,7 +120,17 @@ Do not treat code issuance alone as a completed login. Wait for `auth login` to 
 
 For a rendered Microsoft session, use `visual launch --auth microsoft`; it reuses MultiMC's active account and does not use the headless alias cache. Add `--profile <MinecraftName>` only to select another account already present in MultiMC.
 
-State parts: `core`, `inventory`, `entities`, `window`, `ui`, and `events`.
+State parts: `core`, `inventory`, `entities`, `window`, `ui`, `hud`, and `events`.
+
+Optional isolated Paper Probe:
+
+```powershell
+minecraft-cli --compact --json probe status
+minecraft-cli --compact --json probe events --after 0 --limit 20
+minecraft-cli --compact --json probe diagnostics
+```
+
+`available: false` is the normal black-box fallback. Never install the Probe in a production server pack.
 
 Artifact inspection and explicit retention cleanup:
 

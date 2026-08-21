@@ -9,10 +9,11 @@
 ```text
 AI 또는 사용자
   -> minecraft-cli
-    -> JSON scenario runner
+    -> JSON scenario runner + failure capsule
     -> localhost daemon
       -> Mineflayer 세션
       -> 외부 Minecraft 서버
+      -> 선택형 localhost Paper Probe (격리 테스트 서버만)
     -> MultiMC 버전별 슬롯
       -> Fabric 제어 모드
       -> 실제 렌더링과 PNG
@@ -30,7 +31,7 @@ AI 또는 사용자
 
 ### Scenario runner
 
-여러 기존 CLI 명령을 순서대로 실행하고 한 번의 요약 JSON만 반환합니다. 각 단계는 별도 프로세스로 격리해 기존 명령의 검증과 버전 호환성을 그대로 사용하며, 성공·실패·항상 실행 조건으로 진단과 정리를 제어합니다. 전체 compact 응답은 `.minecraft-cli/runs`에 저장하고 성공 응답은 기본 출력에서 제외합니다.
+Version 2는 JSON selector capture, 변수 치환, assertion, retry/repeat와 소규모 parallel group을 지원합니다. 각 단계는 별도 프로세스로 격리하고 전체 응답은 `.minecraft-cli/runs`에 저장합니다. 실패 시 전후 diff, 관련 이벤트 구간, 데몬·Probe 상태를 비밀값이 제거된 capsule 하나로 남깁니다. Version 1 형식도 그대로 실행합니다.
 
 ### Microsoft 인증
 
@@ -44,7 +45,13 @@ MultiMC 화면 세션은 이 Mineflayer 인증 캐시를 공유하지 않습니�
 
 네이티브 데이터 기반 다이얼로그는 Minecraft 1.21.6 이후 기능이므로 지원 버전 중 1.21.11 어댑터에서 처리합니다. 1.20.1과 1.21.4는 플러그인 인벤토리와 해당 버전의 일반 화면을 동일한 제어 계층으로 검사합니다.
 
-프레임버퍼 PNG에는 SHA-256과 이전 캡처 대비 64×36 RGB 표본 변화량을 계산합니다. 원본 PNG는 그대로 보존하고 변화 판정은 AI가 반복 이미지를 읽을지 결정하는 보조 정보로만 사용합니다.
+`actor` 계층은 NPC 역할 기반 상호작용과 화면 action을 하나의 이름으로 묶습니다. 렌더링 세션이 있으면 이를 우선하고 NPC 상호작용만 가능한 headless 세션으로 제한적으로 대체합니다. 네이티브 Dialog처럼 특정 transport가 필요한 기능은 capability와 사유를 명시합니다.
+
+프레임버퍼 PNG에는 SHA-256과 이전 캡처 대비 변화량을 계산합니다. GUI, tooltip, chat, dialog, HUD 관심 영역과 실제 변화 bounding box를 교차해 crop을 만들고 무변화 프레임은 crop을 만들지 않습니다.
+
+### Paper Probe
+
+Probe는 `.minecraft-cli` 아래 격리 테스트 서버에만 선택 설치하는 assertion용 관측기입니다. 서버 이벤트, 명령·권한 결과와 제한된 플레이어 상태 복원을 제공하며 운영 제어 API나 DB 접근은 하지 않습니다. 미설치 서버에서는 `available: false`로 정상 저하되어 기본 black-box 테스트를 유지합니다.
 
 MultiMC 슬롯은 실제 동시 실행 수만큼만 만들고 버전마다 최대 8개까지 허용합니다. 종료된 슬롯을 먼저 재사용하므로 실행 횟수에 따라 인스턴스가 증가하지 않습니다. 할당은 MultiMC 루트의 잠금 파일로 직렬화합니다.
 

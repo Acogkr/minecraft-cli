@@ -64,9 +64,11 @@ public final class MinecraftCliTestPlugin extends JavaPlugin implements CommandE
   private static final String PAPER_GUI_TITLE = "Minecraft CLI Paper Details";
   private static final String BOOK_GUI_TITLE = "Minecraft CLI Book Details";
   private static final String NPC_NAME = "Minecraft CLI NPC";
+  private static final String DIALOG_NPC_NAME = "Minecraft CLI Dialog NPC";
   private static final String HELPER_TARGET_NAME = "Minecraft CLI Helper Target";
 
   private NamespacedKey npcKey;
+  private NamespacedKey dialogNpcKey;
   private NamespacedKey toastRecipeKey;
   private final Map<UUID, String> guiPageByPlayer = new HashMap<>();
   private final Set<UUID> switchingGui = new HashSet<>();
@@ -74,6 +76,7 @@ public final class MinecraftCliTestPlugin extends JavaPlugin implements CommandE
   @Override
   public void onEnable() {
     npcKey = new NamespacedKey(this, "test_npc");
+    dialogNpcKey = new NamespacedKey(this, "dialog_test_npc");
     toastRecipeKey = new NamespacedKey(this, "toast_recipe");
     if (Bukkit.getRecipe(toastRecipeKey) == null) {
       Bukkit.addRecipe(new ShapelessRecipe(toastRecipeKey, new ItemStack(Material.PAPER)).addIngredient(Material.STICK));
@@ -81,6 +84,7 @@ public final class MinecraftCliTestPlugin extends JavaPlugin implements CommandE
     getLogger().info("minecraft-cli-test-plugin enabled");
     Objects.requireNonNull(getCommand("mctest")).setExecutor(this);
     Objects.requireNonNull(getCommand("mcnpc")).setExecutor(this);
+    Objects.requireNonNull(getCommand("mcdialognpc")).setExecutor(this);
     Objects.requireNonNull(getCommand("mcgui")).setExecutor(this);
     Objects.requireNonNull(getCommand("mchelper")).setExecutor(this);
     getServer().getPluginManager().registerEvents(this, this);
@@ -99,6 +103,15 @@ public final class MinecraftCliTestPlugin extends JavaPlugin implements CommandE
         return true;
       }
       spawnNpc(player);
+      return true;
+    }
+
+    if (command.getName().equalsIgnoreCase("mcdialognpc")) {
+      if (!(sender instanceof Player player)) {
+        sender.sendMessage("mcdialognpc requires a player");
+        return true;
+      }
+      spawnDialogNpc(player);
       return true;
     }
 
@@ -146,6 +159,18 @@ public final class MinecraftCliTestPlugin extends JavaPlugin implements CommandE
     npc.setCustomNameVisible(true);
     npc.getPersistentDataContainer().set(npcKey, PersistentDataType.BYTE, (byte) 1);
     player.sendMessage("minecraft-cli-test-plugin npc spawned " + npc.getEntityId());
+  }
+
+  private void spawnDialogNpc(Player player) {
+    Location location = safeEntityLocation(player, 3.0);
+    Villager npc = (Villager) player.getWorld().spawnEntity(location, EntityType.VILLAGER);
+    npc.setAI(false);
+    npc.setInvulnerable(true);
+    npc.setSilent(true);
+    npc.setCustomName(DIALOG_NPC_NAME);
+    npc.setCustomNameVisible(true);
+    npc.getPersistentDataContainer().set(dialogNpcKey, PersistentDataType.BYTE, (byte) 1);
+    player.sendMessage("minecraft-cli-test-plugin dialog npc spawned " + npc.getEntityId());
   }
 
   private void handleHelperCommand(Player player, String[] args) {
@@ -381,12 +406,13 @@ public final class MinecraftCliTestPlugin extends JavaPlugin implements CommandE
       }
       String customName = entity.getCustomName();
       boolean testNpc = customName != null && customName.equals(NPC_NAME);
+      boolean dialogNpc = customName != null && customName.equals(DIALOG_NPC_NAME);
       boolean helperTarget = customName != null && customName.equals(HELPER_TARGET_NAME);
       if (!testNpc && entity instanceof Villager villager) {
         Byte marker = villager.getPersistentDataContainer().get(npcKey, PersistentDataType.BYTE);
         testNpc = marker != null && marker == (byte) 1;
       }
-      if (testNpc || helperTarget) {
+      if (testNpc || dialogNpc || helperTarget) {
         entity.remove();
         removed++;
       }
@@ -484,6 +510,14 @@ public final class MinecraftCliTestPlugin extends JavaPlugin implements CommandE
       return;
     }
     Byte marker = villager.getPersistentDataContainer().get(npcKey, PersistentDataType.BYTE);
+    Byte dialogMarker = villager.getPersistentDataContainer().get(dialogNpcKey, PersistentDataType.BYTE);
+    if (dialogMarker != null && dialogMarker == (byte) 1) {
+      event.setCancelled(true);
+      player.sendMessage("minecraft-cli-test-plugin dialog npc clicked");
+      boolean shown = Bukkit.dispatchCommand(Bukkit.getConsoleSender(), "dialog show " + player.getName() + " minecraft:server_links");
+      player.sendMessage("minecraft-cli-test-plugin dialog dispatched " + shown);
+      return;
+    }
     if (marker == null || marker != (byte) 1) {
       return;
     }

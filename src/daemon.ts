@@ -29,6 +29,7 @@ interface SessionRecord {
   bot?: Bot;
   events: SessionEvent[];
   nextEventSequence: number;
+  interactionSequence: number;
   pendingTransfer?: { host: string; port: number };
 }
 
@@ -209,7 +210,8 @@ async function createSession(options: any) {
     port,
     version,
     events: [],
-    nextEventSequence: 0
+    nextEventSequence: 0,
+    interactionSequence: 0
   };
   sessions.set(name, record);
   ensureSessionDirs(record);
@@ -576,10 +578,17 @@ function sessionStatePart(snapshot: SessionSnapshot, part: string) {
       scoreboards: snapshot.scoreboards ?? [],
       tablist: snapshot.tablist ?? null
     },
+    hud: {
+      name: snapshot.name,
+      bossBars: snapshot.bossBars ?? [],
+      scoreboards: snapshot.scoreboards ?? [],
+      tablist: snapshot.tablist ?? null,
+      events: snapshot.recentEvents.filter(event => ["title", "title_times", "title_clear", "action_bar", "boss_bar", "scoreboard", "toast", "dialog", "resource_pack"].includes(event.type))
+    },
     events: { name: snapshot.name, events: snapshot.recentEvents }
   };
   if (!(part in parts)) {
-    throw new MinecraftCliError("INVALID_STATE_PART", "State part must be core, inventory, entities, window, ui, or events.", 400);
+    throw new MinecraftCliError("INVALID_STATE_PART", "State part must be core, inventory, entities, window, ui, hud, or events.", 400);
   }
   return parts[part];
 }
@@ -693,11 +702,14 @@ async function sessionUseOn(name: string, options: any) {
   writeUseEntityPacket(bot, target, "at", clickPosition);
   bot.swingArm("right", true);
   await bot.waitForTicks(ticks);
-  addEvent(record, "entity_use_item", `Used ${bot.heldItem.name} on ${target.name ?? target.type ?? "entity"}#${target.id}.`, {
+  const result = {
+    session: record.name,
+    interacted: true,
     item: itemSummary(bot.heldItem),
     target: entitySummary(bot, target)
-  });
-  return snapshotSession(record);
+  };
+  addEvent(record, "entity_use_item", `Used ${bot.heldItem.name} on ${target.name ?? target.type ?? "entity"}#${target.id}.`, result);
+  return result;
 }
 
 async function sessionWait(name: string, ticks: number) {
@@ -797,7 +809,11 @@ async function sessionPlaceBlock(name: string, options: any) {
       }
       const currentReference = bot.blockAt(referencePosition);
       if (!currentReference || currentReference.name === "air") throw new Error("Reference block disappeared before placement");
-      await bot.placeBlock(currentReference, face);
+      if (bot.supportFeature("blockPlaceHasInsideBlock")) {
+        await placeModernBlock(record, currentReference, face, destination);
+      } else {
+        await bot.placeBlock(currentReference, face);
+      }
       lastError = undefined;
       break;
     } catch (error) {
@@ -1220,6 +1236,44 @@ function faceVector(face: string) {
     default:
       throw new MinecraftCliError("INVALID_BLOCK_FACE", "Face must be up, down, north, south, east, or west.");
   }
+}
+
+async function placeModernBlock(record: SessionRecord, referenceBlock: any, face: any, destination: any) {
+  const bot = record.bot!;
+  const cursor = {
+    x: 0.5 + face.x * 0.5,
+    y: 0.5 + face.y * 0.5,
+    z: 0.5 + face.z * 0.5
+  };
+  await bot.lookAt(referenceBlock.position.offset(cursor.x, cursor.y, cursor.z), true);
+  bot._client.write("block_place", {
+    hand: 0,
+    location: referenceBlock.position,
+    direction: blockFaceDirection(face),
+    cursorX: cursor.x,
+    cursorY: cursor.y,
+    cursorZ: cursor.z,
+    insideBlock: false,
+    worldBorderHit: false,
+    sequence: ++record.interactionSequence
+  });
+  bot.swingArm("right", true);
+  for (let tick = 0; tick < 100; tick++) {
+    await bot.waitForTicks(1);
+    const placed = bot.blockAt(destination);
+    if (placed && placed.name !== "air" && placed.name !== "cave_air") return;
+  }
+  throw new MinecraftCliError("BLOCK_PLACE_TIMEOUT", `No block update arrived for ${destination.x}, ${destination.y}, ${destination.z}.`, 504);
+}
+
+function blockFaceDirection(face: any) {
+  if (face.y < 0) return 0;
+  if (face.y > 0) return 1;
+  if (face.z < 0) return 2;
+  if (face.z > 0) return 3;
+  if (face.x < 0) return 4;
+  if (face.x > 0) return 5;
+  throw new MinecraftCliError("INVALID_BLOCK_FACE", "Block face vector cannot be zero.");
 }
 
 
