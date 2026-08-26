@@ -47,6 +47,10 @@ MultiMC 화면 세션은 이 Mineflayer 인증 캐시를 공유하지 않습니�
 
 `actor` 계층은 NPC 역할 기반 상호작용과 화면 action을 하나의 이름으로 묶습니다. 렌더링 세션이 있으면 이를 우선하고 NPC 상호작용만 가능한 headless 세션으로 제한적으로 대체합니다. 네이티브 Dialog처럼 특정 transport가 필요한 기능은 capability와 사유를 명시합니다.
 
+visual adapter는 세션별 framebuffer, GUI scale과 FOV를 MultiMC 설정에 기록하고 실제 적용값을 `/state`에서 다시 읽습니다. 절대·상대 회전과 1·3인칭 전환은 Minecraft client thread에 직접 전달합니다. 1.21.11 adapter는 TextDisplay의 렌더 상태와 실제 카메라 투영을 조합해 pixel 경계, angular miss와 selection cone을 계산합니다.
+
+session-only 리소스팩은 관리형 instance에 고유 파일로 복사하고 기존 options를 restore manifest에 저장합니다. 정상 stop과 launch 실패가 모두 원복 경로를 호출합니다. 두 Microsoft visual 세션의 actor/observer 캡처는 framebuffer 요청을 병렬로 보내며 요청 시각 차이를 결과에 기록합니다.
+
 프레임버퍼 PNG에는 SHA-256과 이전 캡처 대비 변화량을 계산합니다. GUI, tooltip, chat, dialog, HUD 관심 영역과 실제 변화 bounding box를 교차해 crop을 만들고 무변화 프레임은 crop을 만들지 않습니다.
 
 ### Paper Probe

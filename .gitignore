@@ -3,6 +3,8 @@ dist/
 .minecraft-cli/
 fixtures/test-plugin/build/
 fixtures/*/.gradle/
+fixtures/*/.gradle-tmp/
+fixtures/*/.manual-build/
 fixtures/*/build/
 npm-debug.log*
 *.tsbuildinfo

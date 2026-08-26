@@ -11,36 +11,56 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
+import java.util.IdentityHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Set;
+import java.util.function.Consumer;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import net.fabricmc.api.ClientModInitializer;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.CameraType;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.ConnectScreen;
 import net.minecraft.client.gui.screens.inventory.AbstractContainerScreen;
+import net.minecraft.client.gui.screens.dialog.DialogScreen;
 import net.minecraft.client.gui.components.AbstractWidget;
 import net.minecraft.client.gui.components.AbstractButton;
+import net.minecraft.client.gui.components.LerpingBossEvent;
 import net.minecraft.client.gui.ActiveTextCollector;
 import net.minecraft.client.multiplayer.ServerData;
 import net.minecraft.client.multiplayer.resolver.ServerAddress;
+import net.minecraft.network.chat.Component;
+import net.minecraft.network.chat.Style;
 import net.minecraft.world.InteractionHand;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.Display;
 import net.minecraft.world.phys.EntityHitResult;
+import net.minecraft.world.phys.Vec3;
 import net.minecraft.world.inventory.ClickType;
 import net.minecraft.client.input.MouseButtonEvent;
 import net.minecraft.client.input.MouseButtonInfo;
 import net.minecraft.client.input.CharacterEvent;
 import net.minecraft.client.input.KeyEvent;
 import dev.minecraftcli.control.mixin.ChatScreenAccessor;
+import dev.minecraftcli.control.mixin.BossHealthOverlayAccessor;
+import dev.minecraftcli.control.mixin.DisplayAccessor;
+import dev.minecraftcli.control.mixin.DialogScreenAccessor;
+import dev.minecraftcli.control.mixin.ScrollableLayoutAccessor;
+import dev.minecraftcli.control.mixin.TextDisplayAccessor;
 import org.lwjgl.glfw.GLFW;
 
 public final class MinecraftCliControlClient implements ClientModInitializer {
   private static final Gson GSON = new Gson();
   private Minecraft client;
   private String token;
+  private long entitySnapshotSequence;
+  private EntitySnapshot latestEntitySnapshot = new EntitySnapshot(0, 0, Map.of());
 
   @Override
   public void onInitializeClient() {
@@ -70,8 +90,15 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
       server.createContext("/screen/hover-element", exchange -> respondAuthorized(exchange, () -> targetElement(queryRequired(exchange, "text"), queryIntDefault(exchange, "index", 0), queryBoolean(exchange, "exact"), false)));
       server.createContext("/screen/actions", exchange -> respondAuthorized(exchange, this::screenActions));
       server.createContext("/screen/click-action", exchange -> respondAuthorized(exchange, () -> clickAction(query(exchange, "actionId"), queryIntDefault(exchange, "index", -1))));
+      server.createContext("/hud/bossbars", exchange -> respondAuthorized(exchange, this::bossBars));
       server.createContext("/world/entities", exchange -> respondAuthorized(exchange, this::worldEntities));
       server.createContext("/world/interact-role", exchange -> respondAuthorized(exchange, () -> interactRole(queryRequired(exchange, "role"), queryIntDefault(exchange, "index", 0), queryDoubleDefault(exchange, "maxDistance", 8))));
+      server.createContext("/world/interact-entity", exchange -> respondAuthorized(exchange, () -> interactEntity(queryLong(exchange, "snapshotId"), queryInt(exchange, "entityId"), queryRequired(exchange, "expectedType"), queryDoubleDefault(exchange, "maxDistance", 8))));
+      server.createContext("/world/rotate", exchange -> respondAuthorized(exchange, () -> rotate(queryDouble(exchange, "yaw"), queryDouble(exchange, "pitch"), queryBoolean(exchange, "relative"))));
+      server.createContext("/world/perspective", exchange -> respondAuthorized(exchange, () -> perspective(queryRequired(exchange, "mode"))));
+      server.createContext("/world/aim-text", exchange -> respondAuthorized(exchange, () -> aimText(queryRequired(exchange, "text"), queryIntDefault(exchange, "index", 0),
+        queryDoubleDefault(exchange, "maxAngularMiss", 180), queryDoubleDefault(exchange, "minPixelHeight", 0), queryDoubleDefault(exchange, "maxPixelHeight", 100000))));
+      server.createContext("/world/use-item", exchange -> respondAuthorized(exchange, this::useItem));
       server.createContext("/screen/type", exchange -> respondAuthorized(exchange, () -> typeText(queryRequired(exchange, "text"))));
       server.createContext("/screen/key", exchange -> respondAuthorized(exchange, () -> pressKey(queryRequired(exchange, "key"), queryIntDefault(exchange, "modifiers", 0))));
       server.createContext("/screen/scroll", exchange -> respondAuthorized(exchange, () -> scroll(queryDouble(exchange, "delta"))));
@@ -88,6 +115,7 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
         client.execute(() -> {
           String address = host + ":" + serverPort;
           ServerData data = new ServerData("minecraft-cli", address, ServerData.Type.OTHER);
+          data.setResourcePackStatus(ServerData.ServerPackStatus.ENABLED);
           ConnectScreen.startConnecting(client.screen, client, new ServerAddress(host, serverPort), data, false, null);
         });
       }
@@ -106,18 +134,68 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
     }
   }
 
+  private JsonObject bossBars() {
+    JsonObject result = state();
+    JsonArray bars = new JsonArray();
+    Map<UUID, LerpingBossEvent> events = ((BossHealthOverlayAccessor) client.gui.getBossOverlay()).minecraftCli$getEvents();
+    events.forEach((id, event) -> {
+      JsonObject bar = new JsonObject();
+      bar.addProperty("id", id.toString());
+      bar.addProperty("progress", event.getProgress());
+      bar.add("name", componentTree(event.getName()));
+      bars.add(bar);
+    });
+    result.add("bossBars", bars);
+    return result;
+  }
+
+  private JsonObject componentTree(Component component) {
+    JsonObject result = new JsonObject();
+    result.addProperty("text", component.getString());
+    result.addProperty("contents", component.getContents().toString());
+    result.addProperty("pixelWidth", client.font.width(component));
+    JsonArray codePoints = new JsonArray();
+    component.getString().codePoints().limit(32).forEach(codePoint -> codePoints.add(String.format("U+%X", codePoint)));
+    result.add("codePoints", codePoints);
+    Style style = component.getStyle();
+    if (style.getFont() != null) result.addProperty("font", style.getFont().toString());
+    if (style.getColor() != null) result.addProperty("color", style.getColor().serialize());
+    result.addProperty("bold", style.isBold());
+    result.addProperty("italic", style.isItalic());
+    JsonArray siblings = new JsonArray();
+    component.getSiblings().forEach(sibling -> siblings.add(componentTree(sibling)));
+    result.add("siblings", siblings);
+    return result;
+  }
+
   private JsonObject state() {
     JsonObject result = ok();
+    result.addProperty("controlProtocol", 2);
     result.addProperty("version", "1.21.11");
     result.addProperty("screen", client.screen == null ? "game" : client.screen.getClass().getName());
     result.addProperty("connected", client.getConnection() != null);
     result.addProperty("guiWidth", client.getWindow().getGuiScaledWidth());
     result.addProperty("guiHeight", client.getWindow().getGuiScaledHeight());
+    result.addProperty("framebufferWidth", client.getWindow().getWidth());
+    result.addProperty("framebufferHeight", client.getWindow().getHeight());
+    result.addProperty("guiScale", client.getWindow().getGuiScale());
+    result.addProperty("configuredGuiScale", client.options.guiScale().get());
+    result.addProperty("fov", client.options.fov().get());
+    result.addProperty("perspective", perspectiveName(client.options.getCameraType()));
+    JsonObject packs = new JsonObject();
+    packs.add("selected", GSON.toJsonTree(client.getResourcePackRepository().getSelectedIds()));
+    packs.add("available", GSON.toJsonTree(client.getResourcePackRepository().getAvailableIds()));
+    result.add("resourcePacks", packs);
     JsonObject capabilities = new JsonObject();
     capabilities.addProperty("npcRoleInteraction", true);
+    capabilities.addProperty("directEntityInteraction", true);
     capabilities.addProperty("screenActions", true);
     capabilities.addProperty("nativeDialog", true);
     capabilities.addProperty("framebuffer", true);
+    capabilities.addProperty("worldPosition", true);
+    capabilities.addProperty("rotation", true);
+    capabilities.addProperty("perspective", true);
+    capabilities.addProperty("textDisplayProjection", true);
     result.add("capabilities", capabilities);
     if (VirtualCursor.active()) {
       JsonObject cursor = new JsonObject();
@@ -125,8 +203,50 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
       cursor.addProperty("y", VirtualCursor.y());
       result.add("virtualCursor", cursor);
     }
-    if (client.player != null) result.addProperty("player", client.getUser().getName());
+    if (client.player != null) {
+      result.addProperty("player", client.getUser().getName());
+      JsonObject location = new JsonObject();
+      location.addProperty("dimension", client.player.level().dimension().identifier().toString());
+      location.addProperty("x", client.player.getX());
+      location.addProperty("y", client.player.getY());
+      location.addProperty("z", client.player.getZ());
+      result.add("location", location);
+      result.addProperty("yaw", client.player.getYRot());
+      result.addProperty("pitch", client.player.getXRot());
+    }
     return result;
+  }
+
+  private JsonObject rotate(double yaw, double pitch, boolean relative) throws Exception {
+    if (!Double.isFinite(yaw) || !Double.isFinite(pitch)) throw new IllegalArgumentException("Yaw and pitch must be finite");
+    return onClient(() -> {
+      if (client.player == null) throw new IllegalStateException("Player is not connected");
+      float nextYaw = (float) (relative ? client.player.getYRot() + yaw : yaw);
+      float nextPitch = (float) Math.max(-90, Math.min(90, relative ? client.player.getXRot() + pitch : pitch));
+      client.player.setYRot(nextYaw);
+      client.player.setXRot(nextPitch);
+      client.player.setYHeadRot(nextYaw);
+      return state();
+    });
+  }
+
+  private JsonObject perspective(String mode) throws Exception {
+    return onClient(() -> {
+      CameraType type = switch (mode) {
+        case "first" -> CameraType.FIRST_PERSON;
+        case "third-back" -> CameraType.THIRD_PERSON_BACK;
+        case "third-front" -> CameraType.THIRD_PERSON_FRONT;
+        default -> throw new IllegalArgumentException("Perspective must be first, third-back, or third-front");
+      };
+      client.options.setCameraType(type);
+      return state();
+    });
+  }
+
+  private static String perspectiveName(CameraType type) {
+    if (type == CameraType.FIRST_PERSON) return "first";
+    if (type == CameraType.THIRD_PERSON_FRONT) return "third-front";
+    return "third-back";
   }
 
   private JsonObject clickSlot(int slot) throws Exception {
@@ -320,16 +440,15 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
       JsonObject result = state();
       result.addProperty("title", client.screen.getTitle().getString());
       JsonArray actions = new JsonArray();
-      int childIndex = 0;
-      int actionIndex = 0;
-      for (var child : client.screen.children()) {
-        if (child instanceof AbstractButton button && button.visible && button.active) {
-          JsonObject value = widgetSummary(button, childIndex);
-          value.addProperty("actionIndex", actionIndex++);
-          value.addProperty("actionId", "button:" + childIndex);
-          actions.add(value);
-        }
-        childIndex++;
+      List<ActionButtonRef> buttons = actionButtons();
+      for (int actionIndex = 0; actionIndex < buttons.size(); actionIndex++) {
+        ActionButtonRef entry = buttons.get(actionIndex);
+        JsonObject value = widgetSummary(entry.button(), actionIndex);
+        value.addProperty("actionIndex", actionIndex);
+        value.addProperty("actionId", entry.actionId());
+        value.addProperty("source", entry.source());
+        value.addProperty("dialogUserAction", entry.dialogUserAction());
+        actions.add(value);
       }
       result.add("actions", actions);
       return result;
@@ -339,31 +458,66 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
   private JsonObject clickAction(String actionId, int requestedIndex) throws Exception {
     return onClient(() -> {
       if (client.screen == null) throw new IllegalStateException("No screen is open");
-      int wantedChild = actionId != null && actionId.startsWith("button:") ? Integer.parseInt(actionId.substring(7)) : -1;
-      int childIndex = 0;
-      int actionIndex = 0;
-      for (var child : client.screen.children()) {
-        if (child instanceof AbstractButton button && button.visible && button.active) {
-          if ((wantedChild >= 0 && childIndex == wantedChild) || (wantedChild < 0 && actionIndex == requestedIndex)) {
-            double x = button.getX() + button.getWidth() / 2.0;
-            double y = button.getY() + button.getHeight() / 2.0;
-            double scale = client.getWindow().getGuiScale();
-            VirtualCursor.set(x * scale, y * scale);
-            boolean handled = client.screen.mouseClicked(new MouseButtonEvent(x, y, new MouseButtonInfo(0, 0)), false);
-            JsonObject result = state();
-            JsonObject value = widgetSummary(button, childIndex);
-            value.addProperty("actionIndex", actionIndex);
-            value.addProperty("actionId", "button:" + childIndex);
-            result.add("action", value);
-            result.addProperty("handled", handled);
-            return result;
-          }
-          actionIndex++;
+      List<ActionButtonRef> buttons = actionButtons();
+      ActionButtonRef selected = null;
+      int actionIndex = -1;
+      for (int index = 0; index < buttons.size(); index++) {
+        ActionButtonRef candidate = buttons.get(index);
+        if ((actionId != null && actionId.equals(candidate.actionId())) || (actionId == null && index == requestedIndex)) {
+          selected = candidate;
+          actionIndex = index;
+          break;
         }
-        childIndex++;
       }
-      throw new IllegalArgumentException("Dialog action not found");
+      if (selected == null) throw new IllegalArgumentException("Dialog action not found");
+      AbstractButton button = selected.button();
+      double x = button.getX() + button.getWidth() / 2.0;
+      double y = button.getY() + button.getHeight() / 2.0;
+      double scale = client.getWindow().getGuiScale();
+      VirtualCursor.set(x * scale, y * scale);
+      button.onPress(new MouseButtonEvent(x, y, new MouseButtonInfo(0, 0)));
+      JsonObject result = state();
+      JsonObject value = widgetSummary(button, actionIndex);
+      value.addProperty("actionIndex", actionIndex);
+      value.addProperty("actionId", selected.actionId());
+      value.addProperty("source", selected.source());
+      value.addProperty("dialogUserAction", selected.dialogUserAction());
+      result.add("action", value);
+      result.addProperty("handled", true);
+      result.addProperty("callbackInvoked", true);
+      return result;
     });
+  }
+
+  private List<ActionButtonRef> actionButtons() {
+    List<ActionButtonRef> result = new ArrayList<>();
+    Set<AbstractButton> seen = java.util.Collections.newSetFromMap(new IdentityHashMap<>());
+    if (client.screen instanceof DialogScreen<?> dialogScreen) {
+      DialogScreenAccessor accessor = (DialogScreenAccessor) dialogScreen;
+      AbstractButton warning = accessor.minecraftCli$getWarningButton();
+      List<AbstractButton> userButtons = new ArrayList<>();
+      List<AbstractButton> warningButtons = new ArrayList<>();
+      Consumer<AbstractWidget> collect = widget -> {
+        if (widget instanceof AbstractButton button && button.visible && button.active && seen.add(button)) {
+          if (button == warning) warningButtons.add(button);
+          else userButtons.add(button);
+        }
+      };
+      accessor.minecraftCli$getLayout().visitWidgets(collect);
+      if (accessor.minecraftCli$getBodyScroll() != null) {
+        ((ScrollableLayoutAccessor) accessor.minecraftCli$getBodyScroll()).minecraftCli$getContent().visitWidgets(collect);
+      }
+      for (int index = 0; index < userButtons.size(); index++) result.add(new ActionButtonRef(userButtons.get(index), "dialog:" + index, "dialog-layout", true));
+      for (AbstractButton button : warningButtons) result.add(new ActionButtonRef(button, "dialog-warning", "dialog-warning", false));
+    }
+    int childIndex = 0;
+    for (var child : client.screen.children()) {
+      if (child instanceof AbstractButton button && button.visible && button.active && seen.add(button)) {
+        result.add(new ActionButtonRef(button, "button:" + childIndex, "screen-child", false));
+      }
+      childIndex++;
+    }
+    return result;
   }
 
   private JsonObject worldEntities() throws Exception {
@@ -371,10 +525,54 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
       if (client.player == null || client.level == null) throw new IllegalStateException("Player is not connected");
       JsonObject result = state();
       JsonArray entities = new JsonArray();
+      Map<Integer, EntityFingerprint> captured = new HashMap<>();
       for (Entity entity : client.level.entitiesForRendering()) {
-        if (entity != client.player) entities.add(entitySummary(entity));
+        if (entity != client.player) {
+          entities.add(entitySummary(entity));
+          captured.put(entity.getId(), new EntityFingerprint(entity.getUUID(), entity.getType().toString()));
+        }
       }
+      long snapshotId = ++entitySnapshotSequence;
+      latestEntitySnapshot = new EntitySnapshot(snapshotId, System.nanoTime(), Map.copyOf(captured));
+      result.addProperty("snapshotId", snapshotId);
       result.add("entities", entities);
+      return result;
+    });
+  }
+
+  private JsonObject interactEntity(long snapshotId, int entityId, String expectedType, double maxDistance) throws Exception {
+    if (snapshotId < 1 || entityId < 0 || expectedType.isBlank() || maxDistance <= 0 || maxDistance > 128) {
+      throw new IllegalArgumentException("Invalid direct entity selector");
+    }
+    return onClient(() -> {
+      if (client.player == null || client.level == null || client.gameMode == null) throw new IllegalStateException("Player is not connected");
+      EntitySnapshot snapshot = latestEntitySnapshot;
+      if (snapshot.id() != snapshotId) throw new IllegalStateException("Entity snapshot is stale; fetch visual entities again");
+      long ageMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - snapshot.capturedAtNanos());
+      if (ageMillis > 5_000) throw new IllegalStateException("Entity snapshot expired; fetch visual entities again");
+      EntityFingerprint captured = snapshot.entities().get(entityId);
+      if (captured == null) throw new IllegalArgumentException("Entity id was not present in the latest visual entities snapshot: " + entityId);
+      Entity target = client.level.getEntity(entityId);
+      if (target == null) throw new IllegalStateException("Captured entity is no longer present: " + entityId);
+      String actualType = target.getType().toString();
+      if (!captured.uuid().equals(target.getUUID()) || !captured.type().equals(actualType)) {
+        throw new IllegalStateException("Captured entity identity changed; fetch visual entities again");
+      }
+      if (!normalizeEntityType(actualType).equals(normalizeEntityType(expectedType))) {
+        throw new IllegalArgumentException("Captured entity type mismatch: expected " + expectedType + ", got " + actualType);
+      }
+      double distance = client.player.distanceTo(target);
+      if (distance > maxDistance) throw new IllegalArgumentException("Captured entity is outside maxDistance: " + distance + " > " + maxDistance);
+      var atResult = client.gameMode.interactAt(client.player, target, new EntityHitResult(target), InteractionHand.MAIN_HAND);
+      var resultValue = client.gameMode.interact(client.player, target, InteractionHand.MAIN_HAND);
+      client.player.swing(InteractionHand.MAIN_HAND);
+      JsonObject result = state();
+      result.addProperty("snapshotId", snapshotId);
+      result.addProperty("snapshotAgeMillis", ageMillis);
+      result.add("entity", entitySummary(target));
+      result.addProperty("interacted", true);
+      result.addProperty("interactAt", atResult.toString());
+      result.addProperty("interact", resultValue.toString());
       return result;
     });
   }
@@ -411,6 +609,118 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
     value.addProperty("displayName", entity.getDisplayName().getString());
     if (entity.getCustomName() != null) value.addProperty("customName", entity.getCustomName().getString());
     value.addProperty("distance", client.player == null ? -1 : client.player.distanceTo(entity));
+    if (entity instanceof Display.TextDisplay textDisplay) value.add("textDisplay", textDisplaySummary(textDisplay));
+    return value;
+  }
+
+  private JsonObject textDisplaySummary(Display.TextDisplay display) {
+    String text = display.textRenderState().text().getString();
+    var scale = display.renderState().transformation().get(1.0f).getScale();
+    float viewRange = ((DisplayAccessor) display).minecraftCli$getViewRange();
+    byte flags = ((TextDisplayAccessor) display).minecraftCli$getFlags();
+    JsonObject value = new JsonObject();
+    value.addProperty("text", text);
+    value.add("position", vector(display.position().x, display.position().y, display.position().z));
+    value.add("scale", vector(scale.x(), scale.y(), scale.z()));
+    value.addProperty("seeThrough", (flags & Display.TextDisplay.FLAG_SEE_THROUGH) != 0);
+    value.addProperty("viewRange", viewRange);
+
+    if (client.gameRenderer.getMainCamera().isInitialized()) {
+      var camera = client.gameRenderer.getMainCamera();
+      Vec3 relative = display.position().subtract(camera.position());
+      var forward = camera.forwardVector();
+      var up = camera.upVector();
+      var left = camera.leftVector();
+      double depth = relative.x * forward.x() + relative.y * forward.y() + relative.z * forward.z();
+      double leftOffset = relative.x * left.x() + relative.y * left.y() + relative.z * left.z();
+      double upOffset = relative.x * up.x() + relative.y * up.y() + relative.z * up.z();
+      double distance = relative.length();
+      double fovRadians = Math.toRadians(client.options.fov().get());
+      double focal = client.getWindow().getHeight() / (2.0 * Math.tan(fovRadians / 2.0));
+      double centerX = client.getWindow().getWidth() / 2.0 - leftOffset * focal / Math.max(0.0001, depth);
+      double centerY = client.getWindow().getHeight() / 2.0 - upOffset * focal / Math.max(0.0001, depth);
+      String[] lines = text.split("\\R", -1);
+      int textWidth = 0;
+      for (String line : lines) textWidth = Math.max(textWidth, client.font.width(line));
+      double pixelWidth = textWidth * 0.025 * Math.abs(scale.x()) * focal / Math.max(0.0001, depth);
+      double pixelHeight = Math.max(1, lines.length) * 9.0 * 0.025 * Math.abs(scale.y()) * focal / Math.max(0.0001, depth);
+      double dot = distance <= 0.0001 ? 1 : depth / distance;
+      double angularError = Math.toDegrees(Math.acos(Math.max(-1, Math.min(1, dot))));
+      double selectionCone = Math.toDegrees(Math.atan2(Math.max(pixelWidth, pixelHeight) / 2.0, focal));
+      boolean visible = depth > 0 && distance <= viewRange * 64.0
+        && centerX + pixelWidth / 2.0 >= 0 && centerX - pixelWidth / 2.0 <= client.getWindow().getWidth()
+        && centerY + pixelHeight / 2.0 >= 0 && centerY - pixelHeight / 2.0 <= client.getWindow().getHeight();
+      value.addProperty("visible", visible);
+      value.addProperty("angularErrorDegrees", angularError);
+      value.addProperty("selectionConeDegrees", selectionCone);
+      JsonObject bounds = new JsonObject();
+      bounds.addProperty("x", centerX - pixelWidth / 2.0);
+      bounds.addProperty("y", centerY - pixelHeight / 2.0);
+      bounds.addProperty("width", pixelWidth);
+      bounds.addProperty("height", pixelHeight);
+      bounds.addProperty("pixelWidth", pixelWidth);
+      bounds.addProperty("pixelHeight", pixelHeight);
+      value.add("screenBounds", bounds);
+    } else {
+      value.addProperty("visible", false);
+      value.addProperty("angularErrorDegrees", 180);
+      value.addProperty("selectionConeDegrees", 0);
+    }
+    return value;
+  }
+
+  private JsonObject aimText(String text, int requestedIndex, double maxAngularMiss, double minPixelHeight, double maxPixelHeight) throws Exception {
+    if (requestedIndex < 0 || maxAngularMiss < 0 || maxAngularMiss > 180 || minPixelHeight < 0 || maxPixelHeight < minPixelHeight) {
+      throw new IllegalArgumentException("Invalid TextDisplay selector");
+    }
+    return onClient(() -> {
+      if (client.player == null || client.level == null) throw new IllegalStateException("Player is not connected");
+      String needle = text.toLowerCase(java.util.Locale.ROOT);
+      List<Display.TextDisplay> matches = new ArrayList<>();
+      for (Entity entity : client.level.entitiesForRendering()) {
+        if (entity instanceof Display.TextDisplay label && label.textRenderState().text().getString().toLowerCase(java.util.Locale.ROOT).contains(needle)
+          && textDisplaySummary(label).get("visible").getAsBoolean()) matches.add(label);
+      }
+      matches.sort(java.util.Comparator.comparingDouble(client.player::distanceTo));
+      if (requestedIndex >= matches.size()) throw new IllegalArgumentException("No visible TextDisplay matched text: " + text);
+      Display.TextDisplay target = matches.get(requestedIndex);
+      JsonObject before = textDisplaySummary(target);
+      double pixelHeight = before.has("screenBounds") ? before.getAsJsonObject("screenBounds").get("pixelHeight").getAsDouble() : 0;
+      double angularMiss = before.get("angularErrorDegrees").getAsDouble();
+      if (!before.get("visible").getAsBoolean()) throw new IllegalStateException("Matching TextDisplay is outside the visible framebuffer or view range");
+      if (angularMiss > maxAngularMiss) throw new IllegalArgumentException("TextDisplay angular miss exceeds limit: " + angularMiss + " > " + maxAngularMiss);
+      if (pixelHeight < minPixelHeight || pixelHeight > maxPixelHeight) throw new IllegalArgumentException("TextDisplay pixel height is outside bounds: " + pixelHeight);
+      Vec3 delta = target.position().subtract(client.player.getEyePosition());
+      double horizontal = Math.sqrt(delta.x * delta.x + delta.z * delta.z);
+      float yaw = (float) Math.toDegrees(Math.atan2(-delta.x, delta.z));
+      float pitch = (float) -Math.toDegrees(Math.atan2(delta.y, horizontal));
+      client.player.setYRot(yaw);
+      client.player.setXRot(Math.max(-90, Math.min(90, pitch)));
+      client.player.setYHeadRot(yaw);
+      JsonObject result = state();
+      result.add("target", entitySummary(target));
+      result.add("beforeAim", before);
+      return result;
+    });
+  }
+
+  private JsonObject useItem() throws Exception {
+    return onClient(() -> {
+      if (client.player == null || client.gameMode == null) throw new IllegalStateException("Player game mode is not ready");
+      var interaction = client.gameMode.useItem(client.player, InteractionHand.MAIN_HAND);
+      client.player.swing(InteractionHand.MAIN_HAND);
+      JsonObject result = state();
+      result.addProperty("usedItem", true);
+      result.addProperty("interaction", interaction.toString());
+      return result;
+    });
+  }
+
+  private static JsonObject vector(double x, double y, double z) {
+    JsonObject value = new JsonObject();
+    value.addProperty("x", x);
+    value.addProperty("y", y);
+    value.addProperty("z", z);
     return value;
   }
 
@@ -421,6 +731,12 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
       || (entity.getCustomName() != null && entity.getCustomName().getString().toLowerCase(java.util.Locale.ROOT).contains(needle))
       || entity.getType().toString().toLowerCase(java.util.Locale.ROOT).contains(needle)
       || entity.getTags().stream().anyMatch(tag -> tag.toLowerCase(java.util.Locale.ROOT).contains(needle));
+  }
+
+  private static String normalizeEntityType(String type) {
+    String normalized = type.toLowerCase(java.util.Locale.ROOT);
+    int separator = Math.max(normalized.lastIndexOf(':'), normalized.lastIndexOf('.'));
+    return separator >= 0 ? normalized.substring(separator + 1) : normalized;
   }
 
   private static JsonObject widgetSummary(AbstractWidget widget, int index) {
@@ -516,6 +832,7 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
   private static JsonObject ok() { JsonObject value = new JsonObject(); value.addProperty("ok", true); return value; }
   private static JsonObject error(String message) { JsonObject value = new JsonObject(); value.addProperty("ok", false); value.addProperty("error", message == null ? "unknown" : message); return value; }
   private static int queryInt(HttpExchange exchange, String name) { return Integer.parseInt(query(exchange, name)); }
+  private static long queryLong(HttpExchange exchange, String name) { return Long.parseLong(queryRequired(exchange, name)); }
   private static int queryIntDefault(HttpExchange exchange, String name, int fallback) { String value = query(exchange, name); return value == null ? fallback : Integer.parseInt(value); }
   private static double queryDouble(HttpExchange exchange, String name) { return Double.parseDouble(queryRequired(exchange, name)); }
   private static double queryDoubleDefault(HttpExchange exchange, String name, double fallback) { String value = query(exchange, name); return value == null ? fallback : Double.parseDouble(value); }
@@ -552,4 +869,7 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
 
   @FunctionalInterface private interface ThrowingRunnable { void run() throws Exception; }
   @FunctionalInterface private interface ThrowingSupplier { JsonObject get() throws Exception; }
+  private record EntityFingerprint(UUID uuid, String type) {}
+  private record EntitySnapshot(long id, long capturedAtNanos, Map<Integer, EntityFingerprint> entities) {}
+  private record ActionButtonRef(AbstractButton button, String actionId, String source, boolean dialogUserAction) {}
 }

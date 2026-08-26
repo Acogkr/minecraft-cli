@@ -8,6 +8,8 @@ const root = fs.mkdtempSync(path.join(os.tmpdir(), "minecraft-cli-visual-"));
 const multiMcRoot = path.join(root, "multimc");
 const workspace = path.join(root, "workspace");
 const cli = path.resolve("dist", "cli.js");
+const adapterJar = path.resolve("fixtures", "control-mod", "build", "libs", "minecraft-cli-control-0.1.0.jar");
+const adapterJarTimes = fs.existsSync(adapterJar) ? fs.statSync(adapterJar) : undefined;
 const intermediary = path.join(multiMcRoot, "libraries", "net", "fabricmc", "intermediary", "1.21.4", "intermediary-1.21.4.jar");
 const loaderMetadata = path.join(multiMcRoot, "meta", "net.fabricmc.fabric-loader", "0.18.1.json");
 
@@ -29,6 +31,10 @@ function run(args, expectedStatus = 0) {
 }
 
 try {
+  if (adapterJarTimes) {
+    const future = new Date(Date.now() + 60_000);
+    fs.utimesSync(adapterJar, future, future);
+  }
   const invalidScroll = run(["visual", "scroll", "missing", "--delta", "0"], 2);
   assert.equal(invalidScroll.error.code, "VISUAL_SCROLL_INVALID");
 
@@ -76,6 +82,7 @@ try {
   assert.equal(fs.existsSync(modifiedPlaceholder), true);
   run(["visual", "stop", "lazy-one"]);
 } finally {
+  if (adapterJarTimes && fs.existsSync(adapterJar)) fs.utimesSync(adapterJar, adapterJarTimes.atime, adapterJarTimes.mtime);
   await new Promise(resolve => setTimeout(resolve, 250));
   fs.rmSync(root, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 }

@@ -29,6 +29,7 @@ interface OutputOptions {
 }
 
 const program = new Command();
+const VISUAL_CONTROL_PROTOCOL = 2;
 const jsonRequested = process.argv.includes("--json");
 if (jsonRequested) {
   process.argv = process.argv.filter((value, index) => index < 2 || value !== "--json");
@@ -598,7 +599,50 @@ function pruneManagedInstanceFiles(root: string, keep: number) {
   for (const entry of files.slice(keep)) fs.rmSync(entry.file, { force: true });
 }
 
-function configureManagedVisualOptions(targetOptions: string, sourceOptions?: string) {
+function latestSourceMtime(root: string) {
+  let latest = 0;
+  const pending = [root];
+  while (pending.length > 0) {
+    const current = pending.pop()!;
+    if (!fs.existsSync(current)) continue;
+    for (const entry of fs.readdirSync(current, { withFileTypes: true })) {
+      if (entry.name === "build" || entry.name === ".gradle") continue;
+      const full = path.join(current, entry.name);
+      if (entry.isDirectory()) pending.push(full);
+      else if (entry.isFile()) latest = Math.max(latest, fs.statSync(full).mtimeMs);
+    }
+  }
+  return latest;
+}
+
+interface VisualDisplaySettings {
+  width: number;
+  height: number;
+  guiScale: number;
+  fov: number;
+}
+
+function normalizeVisualDisplaySettings(options: any): VisualDisplaySettings {
+  const settings = {
+    width: Number(options.width ?? 960),
+    height: Number(options.height ?? 540),
+    guiScale: Number(options.guiScale ?? 0),
+    fov: Number(options.fov ?? 70)
+  };
+  if (!Number.isInteger(settings.width) || settings.width < 320 || settings.width > 7680
+    || !Number.isInteger(settings.height) || settings.height < 240 || settings.height > 4320) {
+    throw new MinecraftCliError("VISUAL_FRAMEBUFFER_INVALID", "Framebuffer width/height must be integer pixels within 320x240 and 7680x4320.", 400);
+  }
+  if (!Number.isInteger(settings.guiScale) || settings.guiScale < 0 || settings.guiScale > 4) {
+    throw new MinecraftCliError("VISUAL_GUI_SCALE_INVALID", "GUI scale must be an integer from 0 (auto) to 4.", 400);
+  }
+  if (!Number.isInteger(settings.fov) || settings.fov < 30 || settings.fov > 110) {
+    throw new MinecraftCliError("VISUAL_FOV_INVALID", "FOV must be an integer from 30 to 110 degrees.", 400);
+  }
+  return settings;
+}
+
+function configureManagedVisualOptions(targetOptions: string, sourceOptions: string | undefined, settings: VisualDisplaySettings) {
   if (!fs.existsSync(targetOptions) && sourceOptions && fs.existsSync(sourceOptions)) {
     fs.copyFileSync(sourceOptions, targetOptions);
   }
@@ -613,7 +657,59 @@ function configureManagedVisualOptions(targetOptions: string, sourceOptions?: st
   setOption("skipMultiplayerWarning", "true");
   setOption("onboardAccessibility", "false");
   setOption("soundCategory_master", "0.0");
+  setOption("guiScale", String(settings.guiScale));
+  setOption("fov", String(settings.fov));
   fs.writeFileSync(targetOptions, optionsText, "utf8");
+}
+
+function visualRestoreFile(workspace: string, name: string) {
+  return path.join(ensureSessionArtifactDirs(workspace, name).root, "visual-restore.json");
+}
+
+function restoreVisualEnvironment(workspace: string, name: string) {
+  const file = visualRestoreFile(workspace, name);
+  if (!fs.existsSync(file)) return { restored: false, removed: [] as string[] };
+  const manifest = JSON.parse(fs.readFileSync(file, "utf8"));
+  const optionsFile = path.resolve(String(manifest.optionsFile));
+  const gameRoot = path.resolve(String(manifest.gameRoot));
+  if (path.dirname(optionsFile) !== gameRoot || path.basename(optionsFile) !== "options.txt") {
+    throw new MinecraftCliError("VISUAL_RESTORE_INVALID", "Visual restore manifest points outside its managed game directory.", 500);
+  }
+  if (manifest.optionsExisted) fs.writeFileSync(optionsFile, String(manifest.optionsText ?? ""), "utf8");
+  else fs.rmSync(optionsFile, { force: true });
+  const resourceRoot = path.join(gameRoot, "resourcepacks");
+  const removed: string[] = [];
+  for (const raw of Array.isArray(manifest.installedFiles) ? manifest.installedFiles : []) {
+    const candidate = path.resolve(String(raw));
+    if (path.dirname(candidate) !== resourceRoot) continue;
+    fs.rmSync(candidate, { force: true });
+    removed.push(candidate);
+  }
+  fs.rmSync(file, { force: true });
+  return { restored: true, removed };
+}
+
+function installVisualResourcePack(gameRoot: string, zipFile: string, requestedUuid?: string) {
+  const source = path.resolve(zipFile);
+  if (!fs.existsSync(source) || !fs.statSync(source).isFile() || path.extname(source).toLowerCase() !== ".zip") {
+    throw new MinecraftCliError("VISUAL_RESOURCE_PACK_INVALID", "Resource pack must be an existing ZIP file.", 400, { file: source });
+  }
+  const archive = fs.readFileSync(source);
+  const signature = archive.subarray(0, 4).toString("hex");
+  if (!new Set(["504b0304", "504b0506", "504b0708"]).has(signature)) {
+    throw new MinecraftCliError("VISUAL_RESOURCE_PACK_INVALID", "Resource pack does not have a valid ZIP signature.", 400, { file: source });
+  }
+  const uuid = requestedUuid?.trim() || crypto.randomUUID();
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9_.-]{0,79}$/.test(uuid)) {
+    throw new MinecraftCliError("VISUAL_RESOURCE_PACK_UUID_INVALID", "Pack UUID must be 1-80 letters, numbers, dots, underscores, or hyphens.", 400);
+  }
+  const sha256 = crypto.createHash("sha256").update(archive).digest("hex");
+  const resourceRoot = path.join(gameRoot, "resourcepacks");
+  fs.mkdirSync(resourceRoot, { recursive: true });
+  const fileName = `minecraft-cli-${safeFilePart(uuid)}-${sha256.slice(0, 12)}.zip`;
+  const destination = path.join(resourceRoot, fileName);
+  fs.copyFileSync(source, destination);
+  return { uuid, sha256, source, file: destination, packId: `file/${fileName}`, status: "installed" };
 }
 
 function relativeFiles(root: string) {
@@ -661,7 +757,8 @@ function pruneLegacyVisualPlaceholders(multiMcRoot: string) {
   return { removed, skipped };
 }
 
-async function prepareVisualInstance(workspace: string, version: string, multiMcRoot: string, instanceId: string, port: number, token: string, server?: { host: string; port: number }) {
+async function prepareVisualInstance(workspace: string, sessionName: string, version: string, multiMcRoot: string, instanceId: string, port: number, token: string,
+  settings: VisualDisplaySettings, server?: { host: string; port: number }, resourcePack?: { file: string; uuid?: string }) {
   const adapter = VISUAL_ADAPTERS[version as keyof typeof VISUAL_ADAPTERS];
   if (!adapter) {
     throw new MinecraftCliError("VISUAL_VERSION_UNSUPPORTED", `Visual control currently supports: ${VISUAL_SUPPORTED_VERSIONS.join(", ")}.`, 400);
@@ -670,7 +767,12 @@ async function prepareVisualInstance(workspace: string, version: string, multiMc
   if (!fs.existsSync(launcher)) throw new MinecraftCliError("MULTIMC_NOT_FOUND", `MultiMC was not found at ${launcher}.`, 404);
   const projectRoot = path.join(packageRoot(), "fixtures", adapter.project);
   const sourceJar = path.join(projectRoot, "build", "libs", adapter.jar);
-  if (!fs.existsSync(sourceJar)) {
+  const jarIsStale = !fs.existsSync(sourceJar) || latestSourceMtime(path.join(projectRoot, "src")) > fs.statSync(sourceJar).mtimeMs
+    || ["build.gradle", "gradle.properties", "settings.gradle"].some(file => {
+      const candidate = path.join(projectRoot, file);
+      return fs.existsSync(candidate) && fs.statSync(candidate).mtimeMs > fs.statSync(sourceJar).mtimeMs;
+    });
+  if (jarIsStale) {
     const wrapper = path.join(projectRoot, process.platform === "win32" ? "gradlew.bat" : "gradlew");
     const executable = process.platform === "win32" ? process.env.ComSpec ?? "cmd.exe" : "sh";
     const args = process.platform === "win32"
@@ -686,7 +788,12 @@ async function prepareVisualInstance(workspace: string, version: string, multiMc
       const message = build.error?.message || build.stderr || build.stdout || `Gradle exited with status ${build.status}`;
       throw new MinecraftCliError("CONTROL_MOD_BUILD_FAILED", message, 500);
     }
+    if (!fs.existsSync(sourceJar)) throw new MinecraftCliError("CONTROL_MOD_BUILD_FAILED", `Control adapter build did not create ${sourceJar}.`, 500);
   }
+  const intermediary = path.join(multiMcRoot, "libraries", "net", "fabricmc", "intermediary", version, `intermediary-${version}.jar`);
+  await downloadIfMissing(`https://maven.fabricmc.net/net/fabricmc/intermediary/${version}/intermediary-${version}.jar`, intermediary);
+  await prepareMultiMcFabricLoader(multiMcRoot, adapter.loader);
+  const javaPath = adapter.java === 17 ? await ensureJava17Runtime(workspace) : undefined;
   const instanceRoot = path.join(multiMcRoot, "instances", instanceId);
   const createdInstance = !fs.existsSync(path.join(instanceRoot, "instance.cfg"));
   const gameRoot = path.join(instanceRoot, ".minecraft");
@@ -696,13 +803,39 @@ async function prepareVisualInstance(workspace: string, version: string, multiMc
   pruneManagedInstanceFiles(path.join(gameRoot, "crash-reports"), 3);
   const sourceOptions = path.join(multiMcRoot, "instances", version, ".minecraft", "options.txt");
   const targetOptions = path.join(gameRoot, "options.txt");
-  configureManagedVisualOptions(targetOptions, sourceOptions);
+  restoreVisualEnvironment(workspace, sessionName);
+  const restoreManifest: any = {
+    version: 1,
+    gameRoot,
+    optionsFile: targetOptions,
+    optionsExisted: fs.existsSync(targetOptions),
+    optionsText: fs.existsSync(targetOptions) ? fs.readFileSync(targetOptions, "utf8") : "",
+    installedFiles: []
+  };
+  configureManagedVisualOptions(targetOptions, sourceOptions, settings);
+  let installedResourcePack: any;
+  if (resourcePack) {
+    installedResourcePack = installVisualResourcePack(gameRoot, resourcePack.file, resourcePack.uuid);
+    restoreManifest.installedFiles.push(installedResourcePack.file);
+    let optionsText = fs.readFileSync(targetOptions, "utf8");
+    const selected = (() => {
+      const match = /^resourcePacks:(.*)$/m.exec(optionsText);
+      if (!match) return ["vanilla", installedResourcePack.packId];
+      try {
+        const values = JSON.parse(match[1]);
+        return [...new Set([...(Array.isArray(values) ? values : ["vanilla"]), installedResourcePack.packId])];
+      } catch {
+        return ["vanilla", installedResourcePack.packId];
+      }
+    })();
+    optionsText = /^resourcePacks:.*$/m.test(optionsText)
+      ? optionsText.replace(/^resourcePacks:.*$/m, `resourcePacks:${JSON.stringify(selected)}`)
+      : `${optionsText.trimEnd()}\nresourcePacks:${JSON.stringify(selected)}\n`;
+    fs.writeFileSync(targetOptions, optionsText, "utf8");
+  }
+  writeJsonFile(visualRestoreFile(workspace, sessionName), restoreManifest);
   fs.copyFileSync(sourceJar, path.join(mods, "minecraft-cli-control.jar"));
   writeJsonFile(path.join(gameRoot, "minecraft-cli-control.json"), { port, token, version, ...(server ? { serverHost: server.host, serverPort: server.port } : {}) });
-  const intermediary = path.join(multiMcRoot, "libraries", "net", "fabricmc", "intermediary", version, `intermediary-${version}.jar`);
-  await downloadIfMissing(`https://maven.fabricmc.net/net/fabricmc/intermediary/${version}/intermediary-${version}.jar`, intermediary);
-  await prepareMultiMcFabricLoader(multiMcRoot, adapter.loader);
-  const javaPath = adapter.java === 17 ? await ensureJava17Runtime(workspace) : undefined;
   writeJsonFile(path.join(instanceRoot, "mmc-pack.json"), {
     formatVersion: 1,
     components: [
@@ -721,11 +854,68 @@ async function prepareVisualInstance(workspace: string, version: string, multiMc
     "MaxMemAlloc=2048",
     "OverrideWindow=true",
     "LaunchMaximized=false",
-    "MinecraftWinWidth=960",
-    "MinecraftWinHeight=540",
+    `MinecraftWinWidth=${settings.width}`,
+    `MinecraftWinHeight=${settings.height}`,
     ...(javaPath ? ["OverrideJava=true", `JavaPath=${javaPath.replace(/\\/g, "/")}`] : [])
   ].join("\n") + "\n", "utf8");
-  return { launcher, instanceId, instanceRoot, sourceJar, javaRequired: adapter.java, adapter: adapter.project, createdInstance };
+  return { launcher, instanceId, instanceRoot, sourceJar, javaRequired: adapter.java, adapter: adapter.project, createdInstance,
+    displaySettings: settings, ...(installedResourcePack ? { resourcePack: installedResourcePack } : {}) };
+}
+
+interface VisualEntitySummary {
+  id: number;
+  uuid: string;
+  type: string;
+  name?: string;
+  displayName?: string;
+  customName?: string;
+  distance: number;
+  textDisplay?: {
+    text: string;
+    position: { x: number; y: number; z: number };
+    scale: { x: number; y: number; z: number };
+    seeThrough: boolean;
+    viewRange: number;
+    visible: boolean;
+    angularErrorDegrees: number;
+    selectionConeDegrees: number;
+    screenBounds?: { x: number; y: number; width: number; height: number; pixelWidth: number; pixelHeight: number };
+  };
+}
+
+interface VisualEntitySnapshot {
+  snapshotId: number;
+  entities: VisualEntitySummary[];
+}
+
+function normalizeVisualEntityType(type: string) {
+  const normalized = type.trim().toLowerCase();
+  const separator = Math.max(normalized.lastIndexOf(":"), normalized.lastIndexOf("."));
+  return separator >= 0 ? normalized.slice(separator + 1) : normalized;
+}
+
+function parseVisualEntitySnapshot(value: any): VisualEntitySnapshot {
+  const snapshotId = Number(value?.snapshotId);
+  if (!Number.isSafeInteger(snapshotId) || snapshotId < 1 || !Array.isArray(value?.entities)) {
+    throw new MinecraftCliError("VISUAL_ENTITY_SNAPSHOT_INVALID", "The visual bridge returned an invalid entity snapshot.", 502);
+  }
+  const entities = value.entities.map((entity: any) => {
+    const parsed: VisualEntitySummary = {
+      id: Number(entity?.id),
+      uuid: typeof entity?.uuid === "string" ? entity.uuid : "",
+      type: typeof entity?.type === "string" ? entity.type : "",
+      distance: Number(entity?.distance),
+      ...(typeof entity?.name === "string" ? { name: entity.name } : {}),
+      ...(typeof entity?.displayName === "string" ? { displayName: entity.displayName } : {}),
+      ...(typeof entity?.customName === "string" ? { customName: entity.customName } : {}),
+      ...(entity?.textDisplay && typeof entity.textDisplay === "object" ? { textDisplay: entity.textDisplay } : {})
+    };
+    if (!Number.isInteger(parsed.id) || parsed.id < 0 || !parsed.uuid || !parsed.type || !Number.isFinite(parsed.distance) || parsed.distance < 0) {
+      throw new MinecraftCliError("VISUAL_ENTITY_SNAPSHOT_INVALID", "The visual bridge returned a malformed entity entry.", 502, { entity });
+    }
+    return parsed;
+  });
+  return { snapshotId, entities };
 }
 
 async function visualRequest(runtime: any, route: string, timeoutMs = 10_000) {
@@ -735,10 +925,36 @@ async function visualRequest(runtime: any, route: string, timeoutMs = 10_000) {
     const response = await fetch(`http://127.0.0.1:${runtime.port}${route}`, {
       headers: { Authorization: runtime.token }, signal: controller.signal
     });
-    const body = await response.json();
-    if (!response.ok || !(body as any).ok) throw new MinecraftCliError("VISUAL_CONTROL_FAILED", (body as any).error ?? `HTTP ${response.status}`, 500);
+    const contentType = response.headers.get("content-type") ?? "";
+    const text = await response.text();
+    let body: any;
+    try { body = text ? JSON.parse(text) : undefined; }
+    catch {
+      if (response.status === 404) throw new MinecraftCliError("VISUAL_ROUTE_UNAVAILABLE", `The running control adapter does not provide ${route}. Stop and relaunch the visual session to install the current adapter.`, 409,
+        { route, status: response.status, contentType, responsePreview: text.slice(0, 200) });
+      throw new MinecraftCliError("VISUAL_CONTROL_RESPONSE_INVALID", `The visual control adapter returned non-JSON for ${route}.`, 502,
+        { route, status: response.status, contentType, responsePreview: text.slice(0, 200) });
+    }
+    if (!response.ok || !body?.ok) {
+      const code = response.status === 404 ? "VISUAL_ROUTE_UNAVAILABLE" : "VISUAL_CONTROL_FAILED";
+      throw new MinecraftCliError(code, typeof body?.error === "string" ? body.error : `Visual control request failed with HTTP ${response.status}.`, response.status === 404 ? 409 : 500,
+        { route, status: response.status, adapterError: body?.error });
+    }
     return body;
   } finally { clearTimeout(timer); }
+}
+
+async function requireVisualCapability(runtime: any, capability: string) {
+  const state: any = await visualRequest(runtime, "/state", 2000);
+  if (Number(state.controlProtocol) !== VISUAL_CONTROL_PROTOCOL) {
+    throw new MinecraftCliError("VISUAL_CONTROL_ADAPTER_STALE", "The running visual session uses an older control adapter. Stop and relaunch it before using this command.", 409,
+      { expectedProtocol: VISUAL_CONTROL_PROTOCOL, actualProtocol: state.controlProtocol ?? null, version: state.version, capability });
+  }
+  if (state.capabilities?.[capability] !== true) {
+    throw new MinecraftCliError("VISUAL_CAPABILITY_UNAVAILABLE", `The running visual adapter does not support ${capability}.`, 409,
+      { capability, version: state.version, capabilities: state.capabilities ?? {} });
+  }
+  return state;
 }
 
 async function waitForVisual(runtime: any, timeoutMs: number) {
@@ -1941,14 +2157,23 @@ visual
   .argument("<name>")
   .option("--version <version>", "Minecraft version", "1.21.4")
   .option("--multimc <path>", "MultiMC root", defaultMultiMcRoot())
+  .option("--width <pixels>", "framebuffer/window width", (value) => Number(value), 960)
+  .option("--height <pixels>", "framebuffer/window height", (value) => Number(value), 540)
+  .option("--gui-scale <scale>", "GUI scale 0 (auto) to 4", (value) => Number(value), 0)
+  .option("--fov <degrees>", "field of view from 30 to 110", (value) => Number(value), 70)
+  .option("--resource-pack <zip>", "session-only resource pack ZIP")
+  .option("--pack-uuid <id>", "stable resource pack identifier")
   .action((name: string, options) => run(async () => {
     const workspace = getWorkspace();
     const multiMcRoot = path.resolve(options.multimc);
+    const displaySettings = normalizeVisualDisplaySettings(options);
+    if (options.packUuid && !options.resourcePack) throw new MinecraftCliError("VISUAL_RESOURCE_PACK_INVALID", "--pack-uuid requires --resource-pack.", 400);
     await withVisualAllocationLock(multiMcRoot, 60_000, async () => {
       const instanceId = selectAvailableVisualInstanceId(options.version);
       const port = await getFreePort();
       const token = crypto.randomBytes(32).toString("hex");
-      const prepared = await prepareVisualInstance(workspace, options.version, multiMcRoot, instanceId, port, token);
+      const prepared = await prepareVisualInstance(workspace, name, options.version, multiMcRoot, instanceId, port, token, displaySettings, undefined,
+        options.resourcePack ? { file: options.resourcePack, uuid: options.packUuid } : undefined);
       const groupChanged = ensureManagedVisualGroup(multiMcRoot);
       const refreshedLauncherPids = prepared.createdInstance || groupChanged
         ? stopMultiMcLauncherForRefresh(prepared.launcher)
@@ -1970,11 +2195,19 @@ visual
   .option("--username <username>", "offline username", "MinecraftCliVisual")
   .option("--version <version>", "Minecraft version", "1.21.4")
   .option("--multimc <path>", "MultiMC root", defaultMultiMcRoot())
+  .option("--width <pixels>", "framebuffer/window width", (value) => Number(value), 960)
+  .option("--height <pixels>", "framebuffer/window height", (value) => Number(value), 540)
+  .option("--gui-scale <scale>", "GUI scale 0 (auto) to 4", (value) => Number(value), 0)
+  .option("--fov <degrees>", "field of view from 30 to 110", (value) => Number(value), 70)
+  .option("--resource-pack <zip>", "session-only resource pack ZIP")
+  .option("--pack-uuid <id>", "stable resource pack identifier")
   .option("--timeout <ms>", "launch timeout", (value) => Number(value), 120_000)
   .action((name: string, options) => run(async () => {
     const workspace = getWorkspace();
     const multiMcRoot = path.resolve(options.multimc);
     const authMode = normalizeAuthMode(options.auth);
+    const displaySettings = normalizeVisualDisplaySettings(options);
+    if (options.packUuid && !options.resourcePack) throw new MinecraftCliError("VISUAL_RESOURCE_PACK_INVALID", "--pack-uuid requires --resource-pack.", 400);
     const microsoftProfile = authMode === "microsoft"
       ? multiMcMicrosoftProfile(multiMcRoot, options.profile)
       : undefined;
@@ -1982,7 +2215,8 @@ visual
       const instanceId = await selectVisualInstanceId(workspace, name, options.version);
       const controlPort = await getFreePort();
       const token = crypto.randomBytes(32).toString("hex");
-      const prepared = await prepareVisualInstance(workspace, options.version, multiMcRoot, instanceId, controlPort, token, { host: options.host, port: options.port });
+      const prepared = await prepareVisualInstance(workspace, name, options.version, multiMcRoot, instanceId, controlPort, token, displaySettings,
+        { host: options.host, port: options.port }, options.resourcePack ? { file: options.resourcePack, uuid: options.packUuid } : undefined);
       const groupChanged = ensureManagedVisualGroup(multiMcRoot);
       if (prepared.createdInstance || groupChanged) {
         stopMultiMcLauncherForRefresh(prepared.launcher);
@@ -2001,7 +2235,11 @@ visual
       });
       child.unref();
       try {
-        await waitForVisual(runtime, options.timeout);
+        const health: any = await waitForVisual(runtime, options.timeout);
+        if (Number(health.controlProtocol) !== VISUAL_CONTROL_PROTOCOL) {
+          throw new MinecraftCliError("VISUAL_CONTROL_ADAPTER_STALE", "The launched client did not load the current control adapter.", 409,
+            { expectedProtocol: VISUAL_CONTROL_PROTOCOL, actualProtocol: health.controlProtocol ?? null, adapter: prepared.adapter, sourceJar: prepared.sourceJar });
+        }
         await waitForVisualConnection(runtime, options.timeout);
         const stoppedDuplicatePids = stopDuplicateVisualInstanceProcesses(prepared.instanceId, controlPort);
         const screenDeadline = Date.now() + Math.min(options.timeout, 15_000);
@@ -2019,9 +2257,15 @@ visual
           await new Promise(resolve => setTimeout(resolve, 350));
         }
         if (state?.screen !== "game" || stableGameReads < 2) throw new MinecraftCliError("VISUAL_SCREEN_NOT_READY", "Visual client did not reach a stable playable screen.", 500, { state });
-        printResponse({ ok: true, data: { session: name, instance: prepared.instanceId, state, stoppedDuplicatePids } }, { json: program.opts().json });
+        const resourcePack = prepared.resourcePack ? {
+          ...prepared.resourcePack,
+          status: Array.isArray(state?.resourcePacks?.selected) && state.resourcePacks.selected.includes(prepared.resourcePack.packId) ? "active" : "not_active"
+        } : undefined;
+        printResponse({ ok: true, data: { session: name, instance: prepared.instanceId, state, stoppedDuplicatePids,
+          requestedDisplay: displaySettings, ...(resourcePack ? { resourcePack } : {}) } }, { json: program.opts().json });
       } catch (error) {
         stopDedicatedVisualInstance(prepared.instanceId);
+        restoreVisualEnvironment(workspace, name);
         throw error;
       }
     });
@@ -2031,12 +2275,13 @@ visual.command("stop").argument("<name>").action((name: string) => run(async () 
   const runtime = readVisualRuntime(getWorkspace(), name);
   await withVisualAllocationLock(runtime.instanceRoot ? path.dirname(path.dirname(runtime.instanceRoot)) : defaultMultiMcRoot(), 30_000, async () => {
     const stoppedPids = stopDedicatedVisualInstance(runtime.instanceId);
+    const restore = restoreVisualEnvironment(getWorkspace(), name);
     writeJsonFile(visualRuntimeFile(getWorkspace(), name), {
       ...runtime,
       token: "",
       stoppedAt: new Date().toISOString()
     });
-    printResponse({ ok: true, data: { session: name, instance: runtime.instanceId, stoppedPids } }, { json: program.opts().json });
+    printResponse({ ok: true, data: { session: name, instance: runtime.instanceId, stoppedPids, restore } }, { json: program.opts().json });
   });
 }));
 
@@ -2054,9 +2299,41 @@ function readVisualRuntime(workspace: string, name: string) {
 }
 
 visual.command("state").argument("<name>").action((name: string) => run(async () => {
-  const state = await visualRequest(readVisualRuntime(getWorkspace(), name), "/state");
-  printResponse({ ok: true, data: state }, { json: program.opts().json });
+  const runtime = readVisualRuntime(getWorkspace(), name);
+  const state = await visualRequest(runtime, "/state");
+  const resourcePack = runtime.resourcePack ? {
+    uuid: runtime.resourcePack.uuid,
+    sha256: runtime.resourcePack.sha256,
+    packId: runtime.resourcePack.packId,
+    status: Array.isArray(state?.resourcePacks?.selected) && state.resourcePacks.selected.includes(runtime.resourcePack.packId) ? "active" : "not_active"
+  } : undefined;
+  printResponse({ ok: true, data: { ...state, requestedDisplay: runtime.displaySettings, ...(resourcePack ? { managedResourcePack: resourcePack } : {}) } }, { json: program.opts().json });
 }));
+
+visual.command("rotate").description("Rotate the player without using the system mouse.")
+  .argument("<name>")
+  .requiredOption("--yaw <degrees>", "absolute or relative yaw", (value) => Number(value))
+  .requiredOption("--pitch <degrees>", "absolute or relative pitch", (value) => Number(value))
+  .option("--relative", "apply yaw/pitch as deltas", false)
+  .action((name: string, options) => run(async () => {
+    if (!Number.isFinite(options.yaw) || !Number.isFinite(options.pitch)) throw new MinecraftCliError("VISUAL_ROTATION_INVALID", "Yaw and pitch must be finite numbers.", 400);
+    const runtime = readVisualRuntime(getWorkspace(), name);
+    await requireVisualCapability(runtime, "rotation");
+    const query = new URLSearchParams({ yaw: String(options.yaw), pitch: String(options.pitch), relative: String(Boolean(options.relative)) });
+    const state = await visualRequest(runtime, `/world/rotate?${query}`);
+    printResponse({ ok: true, data: state }, { json: program.opts().json });
+  }));
+
+visual.command("perspective").description("Set first-person or third-person camera perspective.")
+  .argument("<name>")
+  .requiredOption("--mode <mode>", "first, third-back, or third-front")
+  .action((name: string, options) => run(async () => {
+    if (!["first", "third-back", "third-front"].includes(options.mode)) throw new MinecraftCliError("VISUAL_PERSPECTIVE_INVALID", "Perspective must be first, third-back, or third-front.", 400);
+    const runtime = readVisualRuntime(getWorkspace(), name);
+    await requireVisualCapability(runtime, "perspective");
+    const state = await visualRequest(runtime, `/world/perspective?mode=${encodeURIComponent(options.mode)}`);
+    printResponse({ ok: true, data: state }, { json: program.opts().json });
+  }));
 
 visual.command("close-screen").argument("<name>").action((name: string) => run(async () => {
   const state = await visualRequest(readVisualRuntime(getWorkspace(), name), "/screen/close");
@@ -2140,6 +2417,18 @@ visual.command("entities").description("List entities visible to the rendered cl
     printResponse({ ok: true, data: state }, { json: program.opts().json });
   }));
 
+visual.command("text-displays").description("Snapshot TextDisplay labels with projected pixel bounds.")
+  .argument("<name>")
+  .option("--text <text>", "plain-text substring filter")
+  .action((name: string, options) => run(async () => {
+    const runtime = readVisualRuntime(getWorkspace(), name);
+    await requireVisualCapability(runtime, "textDisplayProjection");
+    const snapshot = parseVisualEntitySnapshot(await visualRequest(runtime, "/world/entities"));
+    const needle = options.text ? String(options.text).toLowerCase() : undefined;
+    const textDisplays = snapshot.entities.filter(entity => entity.textDisplay && (!needle || entity.textDisplay.text.toLowerCase().includes(needle)));
+    printResponse({ ok: true, data: { snapshotId: snapshot.snapshotId, count: textDisplays.length, textDisplays } }, { json: program.opts().json, compactJson: true });
+  }));
+
 visual.command("interact-role").description("Right-click the nearest rendered entity matching visible role text.")
   .argument("<name>")
   .requiredOption("--role <text>", "custom name, display name, type, or entity tag")
@@ -2150,6 +2439,60 @@ visual.command("interact-role").description("Right-click the nearest rendered en
     const query = new URLSearchParams({ role: options.role, index: String(options.index), maxDistance: String(options.maxDistance) });
     const state = await visualRequest(readVisualRuntime(getWorkspace(), name), `/world/interact-role?${query}`);
     printResponse({ ok: true, data: state }, { json: program.opts().json });
+  }));
+
+visual.command("interact-entity").description("Right-click an entity selected from a fresh rendered-entity snapshot without moving the system mouse.")
+  .argument("<name>")
+  .option("--entity-id <id>", "exact entity id from the latest visual entities view", (value) => Number(value))
+  .option("--nearest-type <type>", "select a rendered entity type such as player or minecraft:player")
+  .option("--index <index>", "zero-based distance-sorted type match", (value) => Number(value), 0)
+  .option("--max-distance <blocks>", "maximum current client-side distance", (value) => Number(value), 8)
+  .action((name: string, options) => run(async () => {
+    const hasEntityId = options.entityId !== undefined;
+    const hasNearestType = typeof options.nearestType === "string" && options.nearestType.trim().length > 0;
+    if (hasEntityId === hasNearestType) {
+      throw new MinecraftCliError("VISUAL_ENTITY_SELECTOR_INVALID", "Provide exactly one of --entity-id or --nearest-type.", 400);
+    }
+    if ((hasEntityId && (!Number.isInteger(options.entityId) || options.entityId < 0))
+      || !Number.isInteger(options.index) || options.index < 0
+      || !Number.isFinite(options.maxDistance) || options.maxDistance <= 0 || options.maxDistance > 128) {
+      throw new MinecraftCliError("VISUAL_ENTITY_SELECTOR_INVALID", "Entity id, type index, or max distance is invalid.", 400);
+    }
+
+    const runtime = readVisualRuntime(getWorkspace(), name);
+    const snapshot = parseVisualEntitySnapshot(await visualRequest(runtime, "/world/entities"));
+    let selected: VisualEntitySummary;
+    let selector: Record<string, unknown>;
+    if (hasEntityId) {
+      const match = snapshot.entities.find(entity => entity.id === options.entityId);
+      if (!match) {
+        throw new MinecraftCliError("VISUAL_ENTITY_NOT_IN_SNAPSHOT", `Entity id ${options.entityId} was not present in the freshly captured snapshot.`, 404, { snapshotId: snapshot.snapshotId });
+      }
+      selected = match;
+      selector = { entityId: options.entityId };
+    } else {
+      const requestedType = normalizeVisualEntityType(options.nearestType);
+      const matches = snapshot.entities
+        .filter(entity => normalizeVisualEntityType(entity.type) === requestedType)
+        .sort((left, right) => left.distance - right.distance || left.id - right.id);
+      if (options.index >= matches.length) {
+        throw new MinecraftCliError("VISUAL_ENTITY_TYPE_NOT_FOUND", `No rendered ${options.nearestType} entity exists at index ${options.index}.`, 404, { snapshotId: snapshot.snapshotId, matches: matches.length });
+      }
+      selected = matches[options.index];
+      selector = { nearestType: options.nearestType, index: options.index };
+    }
+    if (selected.distance > options.maxDistance) {
+      throw new MinecraftCliError("VISUAL_ENTITY_OUT_OF_RANGE", `Entity ${selected.id} is ${selected.distance.toFixed(2)} blocks away, beyond max distance ${options.maxDistance}.`, 409, { snapshotId: snapshot.snapshotId, entity: selected });
+    }
+
+    const query = new URLSearchParams({
+      snapshotId: String(snapshot.snapshotId),
+      entityId: String(selected.id),
+      expectedType: selected.type,
+      maxDistance: String(options.maxDistance)
+    });
+    const result = await visualRequest(runtime, `/world/interact-entity?${query}`);
+    printResponse({ ok: true, data: { session: name, snapshotId: snapshot.snapshotId, selector, entity: selected, result } }, { json: program.opts().json });
   }));
 
 for (const target of [
@@ -2330,9 +2673,12 @@ async function actorCapabilityState(name: string) {
     },
     capabilities: {
       npcRoleInteraction: visualAvailable ? { available: true, transport: "visual" } : headlessAvailable ? { available: true, transport: "headless" } : { available: false, reason: "no_connected_transport" },
+      directEntityInteraction: visualState?.connected && visualState?.capabilities?.directEntityInteraction ? { available: true, transport: "visual" } : { available: false, reason: "visual_transport_required" },
       screenActions: visualState?.connected && visualState?.capabilities?.screenActions ? { available: true, transport: "visual" } : { available: false, reason: "visual_transport_required" },
       nativeDialog: visualState?.connected && visualState?.capabilities?.nativeDialog ? { available: true, transport: "visual" } : { available: false, reason: runtime?.version === "1.21.11" ? "visual_transport_unavailable" : "requires_visual_1.21.11" },
-      framebuffer: visualState?.connected && visualState?.capabilities?.framebuffer ? { available: true, transport: "visual" } : { available: false, reason: "visual_transport_required" }
+      framebuffer: visualState?.connected && visualState?.capabilities?.framebuffer ? { available: true, transport: "visual" } : { available: false, reason: "visual_transport_required" },
+      textDisplayTargeting: visualState?.connected && visualState?.capabilities?.textDisplayProjection ? { available: true, transport: "visual" } : { available: false, reason: visualReason === "available" ? "adapter_does_not_support_text_display_projection" : visualReason },
+      perspective: visualState?.connected && visualState?.capabilities?.perspective ? { available: true, transport: "visual" } : { available: false, reason: visualReason }
     }
   };
 }
@@ -2385,6 +2731,88 @@ actor.command("click-action").description("Click a rendered screen or native Dia
     if (options.index !== undefined) query.set("index", String(options.index));
     const result = await visualRequest(readVisualRuntime(getWorkspace(), name), `/screen/click-action?${query}`);
     printResponse({ ok: true, data: { actor: name, transport: "visual", nativeDialog: capabilities.capabilities.nativeDialog.available, result } }, { json: program.opts().json, compactJson: true });
+  }));
+
+actor.command("aim-text").description("Aim at a visible TextDisplay by plain text and optionally right-click.")
+  .argument("<name>")
+  .requiredOption("--text <text>", "plain TextDisplay text or substring")
+  .option("--index <index>", "zero-based nearest matching label", (value) => Number(value), 0)
+  .option("--max-angular-miss <degrees>", "maximum angular correction", (value) => Number(value), 180)
+  .option("--min-pixel-height <pixels>", "minimum projected label height", (value) => Number(value), 0)
+  .option("--max-pixel-height <pixels>", "maximum projected label height", (value) => Number(value), 100000)
+  .option("--click", "right-click after aiming", false)
+  .option("--expect-dialog", "wait for a screen/dialog after clicking", false)
+  .action((name: string, options) => run(async () => {
+    if (!Number.isInteger(options.index) || options.index < 0 || !Number.isFinite(options.maxAngularMiss) || options.maxAngularMiss < 0 || options.maxAngularMiss > 180
+      || !Number.isFinite(options.minPixelHeight) || !Number.isFinite(options.maxPixelHeight) || options.minPixelHeight < 0 || options.maxPixelHeight < options.minPixelHeight) {
+      throw new MinecraftCliError("TEXT_DISPLAY_SELECTOR_INVALID", "TextDisplay index, angular miss, or pixel bounds are invalid.", 400);
+    }
+    const capabilities: any = await actorCapabilityState(name);
+    if (!capabilities.capabilities.textDisplayTargeting.available) throw new MinecraftCliError("ACTOR_CAPABILITY_UNAVAILABLE", "TextDisplay targeting requires a compatible connected visual actor.", 409, capabilities);
+    const runtime = readVisualRuntime(getWorkspace(), name);
+    const query = new URLSearchParams({ text: options.text, index: String(options.index), maxAngularMiss: String(options.maxAngularMiss),
+      minPixelHeight: String(options.minPixelHeight), maxPixelHeight: String(options.maxPixelHeight) });
+    const result = await visualRequest(runtime, `/world/aim-text?${query}`);
+    const clicked = Boolean(options.click || options.expectDialog);
+    let clickResult: any;
+    if (clicked) {
+      await new Promise(resolve => setTimeout(resolve, 100));
+      clickResult = await visualRequest(runtime, "/world/use-item");
+    }
+    let dialogOpened = false;
+    let finalState: any = result;
+    if (options.expectDialog) {
+      const deadline = Date.now() + 5000;
+      while (Date.now() < deadline) {
+        finalState = await visualRequest(runtime, "/state");
+        if (finalState.screen !== "game") { dialogOpened = true; break; }
+        await new Promise(resolve => setTimeout(resolve, 100));
+      }
+      if (!dialogOpened) throw new MinecraftCliError("TEXT_DISPLAY_DIALOG_NOT_OPENED", "TextDisplay selection did not open a screen within 5 seconds.", 409, { result, finalState });
+    }
+    printResponse({ ok: true, data: { actor: name, transport: "visual", result, clicked, ...(clickResult ? { clickResult } : {}), dialogOpened, finalState } }, { json: program.opts().json, compactJson: true });
+  }));
+
+async function captureVisualFrame(workspace: string, name: string, label: string) {
+  const runtime = readVisualRuntime(workspace, name);
+  const dirs = ensureSessionArtifactDirs(workspace, name);
+  const file = path.join(dirs.screenshots, `${timestampFilePart()}-${safeFilePart(label)}.png`);
+  const requestedAtMs = Date.now();
+  const capture = await visualRequest(runtime, `/screenshot?path=${encodeURIComponent(file)}`, 20_000);
+  if (!fs.existsSync(file) || fs.statSync(file).size === 0) throw new MinecraftCliError("VISUAL_SCREENSHOT_MISSING", `Visual frame for '${name}' was not created.`, 500);
+  return { session: name, file, requestedAtMs, capture, state: await visualRequest(runtime, "/state") };
+}
+
+actor.command("capture-pair").description("Capture the same moment from Microsoft-authenticated actor and observer visual sessions.")
+  .argument("<actorName>")
+  .requiredOption("--observer <name>", "second Microsoft visual session")
+  .option("--label <label>", "capture label", "motion")
+  .option("--actor-perspective <mode>", "first, third-back, or third-front", "first")
+  .option("--observer-perspective <mode>", "first, third-back, or third-front", "third-back")
+  .action((actorName: string, options) => run(async () => {
+    if (actorName === options.observer) throw new MinecraftCliError("ACTOR_PAIR_INVALID", "Actor and observer must be different visual sessions.", 400);
+    for (const mode of [options.actorPerspective, options.observerPerspective]) {
+      if (!["first", "third-back", "third-front"].includes(mode)) throw new MinecraftCliError("VISUAL_PERSPECTIVE_INVALID", "Pair perspectives must be first, third-back, or third-front.", 400);
+    }
+    const workspace = getWorkspace();
+    const actorRuntime = readVisualRuntimeIfExists(workspace, actorName);
+    const observerRuntime = readVisualRuntimeIfExists(workspace, options.observer);
+    if (actorRuntime?.auth !== "microsoft" || observerRuntime?.auth !== "microsoft") {
+      throw new MinecraftCliError("ACTOR_CAPABILITY_UNAVAILABLE", "Dual actor/observer capture requires two distinct Microsoft-authenticated visual sessions.", 409,
+        { capability: "dualVisualCapture", actor: actorRuntime?.auth ?? "unavailable", observer: observerRuntime?.auth ?? "unavailable" });
+    }
+    const [actorState, observerState] = await Promise.all([
+      visualRequest(actorRuntime, `/world/perspective?mode=${encodeURIComponent(options.actorPerspective)}`),
+      visualRequest(observerRuntime, `/world/perspective?mode=${encodeURIComponent(options.observerPerspective)}`)
+    ]);
+    if (!actorState.connected || !observerState.connected) throw new MinecraftCliError("ACTOR_CAPABILITY_UNAVAILABLE", "Both visual sessions must be connected before pair capture.", 409);
+    const capturedAt = new Date().toISOString();
+    const [actorFrame, observerFrame] = await Promise.all([
+      captureVisualFrame(workspace, actorName, `${options.label}-actor`),
+      captureVisualFrame(workspace, options.observer, `${options.label}-observer`)
+    ]);
+    const captureSkewMs = Math.abs(actorFrame.requestedAtMs - observerFrame.requestedAtMs);
+    printResponse({ ok: true, data: { capability: "dualVisualCapture", capturedAt, captureSkewMs, actor: actorFrame, observer: observerFrame } }, { json: program.opts().json, compactJson: true });
   }));
 
 program

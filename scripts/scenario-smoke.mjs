@@ -60,6 +60,11 @@ fs.writeFileSync(scenarioV2File, JSON.stringify({
       args: ["session", "state", "${alphaName}", "--part", "core"],
       assertions: [{ path: "$.data.name", equals: "alpha" }, { path: "$.data.auth", equals: "${expectedAuth}" }]
     },
+    {
+      name: "typed-capture-assertion",
+      args: ["status"],
+      assertions: [{ path: "$.data.daemon.pid", equals: "${daemonPid}" }]
+    },
     { name: "repeat-status", args: ["status"], repeat: 3, assertions: [{ path: "$.ok", equals: true }] },
     { name: "retry-allowed", args: ["session", "state", "missing", "--part", "core"], retry: 2, retryDelayMs: 1, allowFailure: true },
     {
@@ -145,21 +150,21 @@ try {
 
   const dryRunV2 = runV2(["--dry-run"], 0);
   assert.equal(dryRunV2.data.version, 2);
-  assert.equal(dryRunV2.data.stepCount, 9);
+  assert.equal(dryRunV2.data.stepCount, 10);
 
   const v2 = runV2([], 0);
   assert.equal(v2.ok, true);
   assert.equal(v2.data.name, "runner-v2-smoke");
-  assert.equal(v2.data.passed, 8);
+  assert.equal(v2.data.passed, 9);
   assert.equal("steps" in v2.data, false);
   const v2Report = JSON.parse(fs.readFileSync(v2.data.reportFile, "utf8"));
   assert.equal(v2Report.version, 2);
   assert.equal(v2Report.steps[1].children[0].captures.alphaName, "alpha");
   assert.equal(v2Report.steps[1].children[1].captures.betaName, "beta");
-  assert.equal(v2Report.steps[3].repetitions.length, 3);
-  assert.equal(v2Report.steps[4].attempts, 3);
-  assert.equal(v2Report.steps[4].allowedFailure, true);
-  assert.equal(fs.existsSync(v2Report.steps[4].capsuleFile), true);
+  assert.equal(v2Report.steps[4].repetitions.length, 3);
+  assert.equal(v2Report.steps[5].attempts, 3);
+  assert.equal(v2Report.steps[5].allowedFailure, true);
+  assert.equal(fs.existsSync(v2Report.steps[5].capsuleFile), true);
 
   const repeatedV2 = [runV2([], 0), runV2([], 0)];
   for (const repeated of repeatedV2) {

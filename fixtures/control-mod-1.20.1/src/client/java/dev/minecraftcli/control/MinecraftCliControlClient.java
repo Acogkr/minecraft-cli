@@ -11,12 +11,16 @@ import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
 import java.nio.file.Path;
 import java.util.ArrayList;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.UUID;
 import java.util.concurrent.CompletableFuture;
 import java.util.concurrent.Executors;
 import java.util.concurrent.TimeUnit;
 import net.fabricmc.api.ClientModInitializer;
 import net.minecraft.client.Minecraft;
+import net.minecraft.client.CameraType;
 import net.minecraft.client.Screenshot;
 import net.minecraft.client.gui.screens.ChatScreen;
 import net.minecraft.client.gui.screens.ConnectScreen;
@@ -35,6 +39,8 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
   private static final Gson GSON = new Gson();
   private Minecraft client;
   private String token;
+  private long entitySnapshotSequence;
+  private EntitySnapshot latestEntitySnapshot = new EntitySnapshot(0, 0, Map.of());
 
   @Override
   public void onInitializeClient() {
@@ -66,6 +72,9 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
       server.createContext("/screen/click-action", exchange -> respondAuthorized(exchange, () -> clickAction(query(exchange, "actionId"), queryIntDefault(exchange, "index", -1))));
       server.createContext("/world/entities", exchange -> respondAuthorized(exchange, this::worldEntities));
       server.createContext("/world/interact-role", exchange -> respondAuthorized(exchange, () -> interactRole(queryRequired(exchange, "role"), queryIntDefault(exchange, "index", 0), queryDoubleDefault(exchange, "maxDistance", 8))));
+      server.createContext("/world/interact-entity", exchange -> respondAuthorized(exchange, () -> interactEntity(queryLong(exchange, "snapshotId"), queryInt(exchange, "entityId"), queryRequired(exchange, "expectedType"), queryDoubleDefault(exchange, "maxDistance", 8))));
+      server.createContext("/world/rotate", exchange -> respondAuthorized(exchange, () -> rotate(queryDouble(exchange, "yaw"), queryDouble(exchange, "pitch"), queryBoolean(exchange, "relative"))));
+      server.createContext("/world/perspective", exchange -> respondAuthorized(exchange, () -> perspective(queryRequired(exchange, "mode"))));
       server.createContext("/screen/type", exchange -> respondAuthorized(exchange, () -> typeText(queryRequired(exchange, "text"))));
       server.createContext("/screen/key", exchange -> respondAuthorized(exchange, () -> pressKey(queryRequired(exchange, "key"), queryIntDefault(exchange, "modifiers", 0))));
       server.createContext("/screen/scroll", exchange -> respondAuthorized(exchange, () -> scroll(queryDouble(exchange, "delta"))));
@@ -102,16 +111,32 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
 
   private JsonObject state() {
     JsonObject result = ok();
+    result.addProperty("controlProtocol", 2);
     result.addProperty("version", "1.20.1");
     result.addProperty("screen", client.screen == null ? "game" : client.screen.getClass().getName());
     result.addProperty("connected", client.getConnection() != null);
     result.addProperty("guiWidth", client.getWindow().getGuiScaledWidth());
     result.addProperty("guiHeight", client.getWindow().getGuiScaledHeight());
+    result.addProperty("framebufferWidth", client.getWindow().getWidth());
+    result.addProperty("framebufferHeight", client.getWindow().getHeight());
+    result.addProperty("guiScale", client.getWindow().getGuiScale());
+    result.addProperty("configuredGuiScale", client.options.guiScale().get());
+    result.addProperty("fov", client.options.fov().get());
+    result.addProperty("perspective", perspectiveName(client.options.getCameraType()));
+    JsonObject packs = new JsonObject();
+    packs.add("selected", GSON.toJsonTree(client.getResourcePackRepository().getSelectedIds()));
+    packs.add("available", GSON.toJsonTree(client.getResourcePackRepository().getAvailableIds()));
+    result.add("resourcePacks", packs);
     JsonObject capabilities = new JsonObject();
     capabilities.addProperty("npcRoleInteraction", true);
+    capabilities.addProperty("directEntityInteraction", true);
     capabilities.addProperty("screenActions", true);
     capabilities.addProperty("nativeDialog", false);
     capabilities.addProperty("framebuffer", true);
+    capabilities.addProperty("worldPosition", true);
+    capabilities.addProperty("rotation", true);
+    capabilities.addProperty("perspective", true);
+    capabilities.addProperty("textDisplayProjection", false);
     result.add("capabilities", capabilities);
     if (VirtualCursor.active()) {
       JsonObject cursor = new JsonObject();
@@ -119,8 +144,50 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
       cursor.addProperty("y", VirtualCursor.y());
       result.add("virtualCursor", cursor);
     }
-    if (client.player != null) result.addProperty("player", client.player.getGameProfile().getName());
+    if (client.player != null) {
+      result.addProperty("player", client.player.getGameProfile().getName());
+      JsonObject location = new JsonObject();
+      location.addProperty("dimension", client.player.level().dimension().location().toString());
+      location.addProperty("x", client.player.getX());
+      location.addProperty("y", client.player.getY());
+      location.addProperty("z", client.player.getZ());
+      result.add("location", location);
+      result.addProperty("yaw", client.player.getYRot());
+      result.addProperty("pitch", client.player.getXRot());
+    }
     return result;
+  }
+
+  private JsonObject rotate(double yaw, double pitch, boolean relative) throws Exception {
+    if (!Double.isFinite(yaw) || !Double.isFinite(pitch)) throw new IllegalArgumentException("Yaw and pitch must be finite");
+    return onClient(() -> {
+      if (client.player == null) throw new IllegalStateException("Player is not connected");
+      float nextYaw = (float) (relative ? client.player.getYRot() + yaw : yaw);
+      float nextPitch = (float) Math.max(-90, Math.min(90, relative ? client.player.getXRot() + pitch : pitch));
+      client.player.setYRot(nextYaw);
+      client.player.setXRot(nextPitch);
+      client.player.setYHeadRot(nextYaw);
+      return state();
+    });
+  }
+
+  private JsonObject perspective(String mode) throws Exception {
+    return onClient(() -> {
+      CameraType type = switch (mode) {
+        case "first" -> CameraType.FIRST_PERSON;
+        case "third-back" -> CameraType.THIRD_PERSON_BACK;
+        case "third-front" -> CameraType.THIRD_PERSON_FRONT;
+        default -> throw new IllegalArgumentException("Perspective must be first, third-back, or third-front");
+      };
+      client.options.setCameraType(type);
+      return state();
+    });
+  }
+
+  private static String perspectiveName(CameraType type) {
+    if (type == CameraType.FIRST_PERSON) return "first";
+    if (type == CameraType.THIRD_PERSON_FRONT) return "third-front";
+    return "third-back";
   }
 
   private JsonObject clickSlot(int slot) throws Exception {
@@ -369,8 +436,54 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
       if (client.player == null || client.level == null) throw new IllegalStateException("Player is not connected");
       JsonObject result = state();
       JsonArray entities = new JsonArray();
-      for (Entity entity : client.level.entitiesForRendering()) if (entity != client.player) entities.add(entitySummary(entity));
+      Map<Integer, EntityFingerprint> captured = new HashMap<>();
+      for (Entity entity : client.level.entitiesForRendering()) {
+        if (entity != client.player) {
+          entities.add(entitySummary(entity));
+          captured.put(entity.getId(), new EntityFingerprint(entity.getUUID(), entity.getType().toString()));
+        }
+      }
+      long snapshotId = ++entitySnapshotSequence;
+      latestEntitySnapshot = new EntitySnapshot(snapshotId, System.nanoTime(), Map.copyOf(captured));
+      result.addProperty("snapshotId", snapshotId);
       result.add("entities", entities);
+      return result;
+    });
+  }
+
+  private JsonObject interactEntity(long snapshotId, int entityId, String expectedType, double maxDistance) throws Exception {
+    if (snapshotId < 1 || entityId < 0 || expectedType.isBlank() || maxDistance <= 0 || maxDistance > 128) {
+      throw new IllegalArgumentException("Invalid direct entity selector");
+    }
+    return onClient(() -> {
+      if (client.player == null || client.level == null || client.gameMode == null) throw new IllegalStateException("Player is not connected");
+      EntitySnapshot snapshot = latestEntitySnapshot;
+      if (snapshot.id() != snapshotId) throw new IllegalStateException("Entity snapshot is stale; fetch visual entities again");
+      long ageMillis = TimeUnit.NANOSECONDS.toMillis(System.nanoTime() - snapshot.capturedAtNanos());
+      if (ageMillis > 5_000) throw new IllegalStateException("Entity snapshot expired; fetch visual entities again");
+      EntityFingerprint captured = snapshot.entities().get(entityId);
+      if (captured == null) throw new IllegalArgumentException("Entity id was not present in the latest visual entities snapshot: " + entityId);
+      Entity target = client.level.getEntity(entityId);
+      if (target == null) throw new IllegalStateException("Captured entity is no longer present: " + entityId);
+      String actualType = target.getType().toString();
+      if (!captured.uuid().equals(target.getUUID()) || !captured.type().equals(actualType)) {
+        throw new IllegalStateException("Captured entity identity changed; fetch visual entities again");
+      }
+      if (!normalizeEntityType(actualType).equals(normalizeEntityType(expectedType))) {
+        throw new IllegalArgumentException("Captured entity type mismatch: expected " + expectedType + ", got " + actualType);
+      }
+      double distance = client.player.distanceTo(target);
+      if (distance > maxDistance) throw new IllegalArgumentException("Captured entity is outside maxDistance: " + distance + " > " + maxDistance);
+      var atResult = client.gameMode.interactAt(client.player, target, new EntityHitResult(target), InteractionHand.MAIN_HAND);
+      var resultValue = client.gameMode.interact(client.player, target, InteractionHand.MAIN_HAND);
+      client.player.swing(InteractionHand.MAIN_HAND);
+      JsonObject result = state();
+      result.addProperty("snapshotId", snapshotId);
+      result.addProperty("snapshotAgeMillis", ageMillis);
+      result.add("entity", entitySummary(target));
+      result.addProperty("interacted", true);
+      result.addProperty("interactAt", atResult.toString());
+      result.addProperty("interact", resultValue.toString());
       return result;
     });
   }
@@ -415,6 +528,12 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
       || (entity.getCustomName() != null && entity.getCustomName().getString().toLowerCase(java.util.Locale.ROOT).contains(needle))
       || entity.getType().toString().toLowerCase(java.util.Locale.ROOT).contains(needle)
       || entity.getTags().stream().anyMatch(tag -> tag.toLowerCase(java.util.Locale.ROOT).contains(needle));
+  }
+
+  private static String normalizeEntityType(String type) {
+    String normalized = type.toLowerCase(java.util.Locale.ROOT);
+    int separator = Math.max(normalized.lastIndexOf(':'), normalized.lastIndexOf('.'));
+    return separator >= 0 ? normalized.substring(separator + 1) : normalized;
   }
 
   private static JsonObject widgetSummary(AbstractWidget widget, int index) {
@@ -511,6 +630,7 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
   private static JsonObject ok() { JsonObject value = new JsonObject(); value.addProperty("ok", true); return value; }
   private static JsonObject error(String message) { JsonObject value = new JsonObject(); value.addProperty("ok", false); value.addProperty("error", message == null ? "unknown" : message); return value; }
   private static int queryInt(HttpExchange exchange, String name) { return Integer.parseInt(query(exchange, name)); }
+  private static long queryLong(HttpExchange exchange, String name) { return Long.parseLong(queryRequired(exchange, name)); }
   private static int queryIntDefault(HttpExchange exchange, String name, int fallback) { String value = query(exchange, name); return value == null ? fallback : Integer.parseInt(value); }
   private static double queryDouble(HttpExchange exchange, String name) { return Double.parseDouble(queryRequired(exchange, name)); }
   private static double queryDoubleDefault(HttpExchange exchange, String name, double fallback) { String value = query(exchange, name); return value == null ? fallback : Double.parseDouble(value); }
@@ -547,4 +667,6 @@ public final class MinecraftCliControlClient implements ClientModInitializer {
 
   @FunctionalInterface private interface ThrowingRunnable { void run() throws Exception; }
   @FunctionalInterface private interface ThrowingSupplier { JsonObject get() throws Exception; }
+  private record EntityFingerprint(UUID uuid, String type) {}
+  private record EntitySnapshot(long id, long capturedAtNanos, Map<Integer, EntityFingerprint> entities) {}
 }

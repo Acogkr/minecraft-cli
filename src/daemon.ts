@@ -8,6 +8,7 @@ import { MinecraftCliError, toErrorResponse } from "./errors";
 import { getFreePort, isPortOpen } from "./ipc";
 import { ensureBaseDirs, getPaths } from "./paths";
 import { accountPaths, normalizeAccountAlias, normalizeAuthMode, readAccountProfile, type MinecraftAuthMode } from "./auth-store";
+import { clientSettingsForVersion, installClientSettingsPacketAdapter } from "./client-settings";
 import type { DaemonStateFile, SessionEvent, SessionSnapshot } from "./types";
 
 const nodeRequire = createRequire(__filename);
@@ -307,8 +308,10 @@ async function connectSession(name: string, timeoutMs = 60_000, options: any = {
       }
     } : {}),
     version: record.version,
+    clientSettings: clientSettingsForVersion(record.version),
     hideErrors: false
   });
+  installClientSettingsPacketAdapter(bot._client, record.version);
   record.bot = bot;
   attachBotEvents(record, bot);
 

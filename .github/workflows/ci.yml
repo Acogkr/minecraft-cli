@@ -22,6 +22,7 @@ jobs:
       - run: npm run test:event-cursor
       - run: npm run test:image-diff
       - run: npm run test:scenario
+      - run: npm run test:visual-world-camera
       - run: npm run test:visual-lifecycle
       - run: npm pack --dry-run
       - working-directory: fixtures/test-plugin

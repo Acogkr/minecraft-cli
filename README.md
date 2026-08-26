@@ -140,11 +140,51 @@ minecraft-cli --compact --json visual launch visual1 `
   --host 127.0.0.1 `
   --port 25565 `
   --username VisualOne `
-  --version 1.21.4
+  --version 1.21.4 `
+  --width 960 --height 540 --gui-scale 2 --fov 70
 
 minecraft-cli --compact --json visual hover-slot visual1 --slot 10
 minecraft-cli --compact --json visual screenshot visual1 --label gui-lore
 minecraft-cli --compact --json visual stop visual1
+```
+
+`visual state`는 실제 적용된 framebuffer 크기, GUI scale, FOV, yaw/pitch, 1·3인칭 시점과 선택된 리소스팩을 반환합니다. 회전과 시점 변경은 Windows 입력 장치를 사용하지 않습니다.
+
+```powershell
+minecraft-cli --compact --json visual state visual1
+minecraft-cli --compact --json visual rotate visual1 --yaw 180 --pitch -15
+minecraft-cli --compact --json visual rotate visual1 --yaw 20 --pitch 0 --relative
+minecraft-cli --compact --json visual perspective visual1 --mode third-back
+```
+
+control-mod 소스가 기존 JAR보다 새로우면 다음 `visual prepare`/`visual launch`에서 자동으로 다시 빌드합니다. 이미 실행 중인 구형 화면 세션은 hot reload되지 않으므로 `visual stop` 후 다시 실행해야 합니다. 이 경우 빈 결과나 HTML 파싱 오류 대신 `VISUAL_CONTROL_ADAPTER_STALE` 또는 `VISUAL_ROUTE_UNAVAILABLE`을 반환합니다.
+
+Minecraft 1.21.11에서는 TextDisplay 문구와 월드 좌표, scale, seeThrough, viewRange, 화면 pixel 경계와 각도 오차를 읽고 문구로 조준·우클릭할 수 있습니다.
+
+```powershell
+minecraft-cli --compact --json visual text-displays visual1 --text "스폰 뒷편"
+minecraft-cli --compact --json actor aim-text visual1 `
+  --text "스폰 뒷편" `
+  --min-pixel-height 12 --max-pixel-height 32 `
+  --max-angular-miss 20 --expect-dialog
+```
+
+리소스팩은 visual 세션에만 복사·활성화되며 UUID, SHA-256, active 상태를 확인할 수 있습니다. `visual stop` 또는 launch 실패 시 options와 복사한 ZIP을 원복합니다.
+
+```powershell
+minecraft-cli --compact --json visual launch model-actor `
+  --auth microsoft --profile ActorMinecraftName `
+  --host play.example.com --port 25565 --version 1.21.11 `
+  --resource-pack C:\packs\modelengine-core.zip `
+  --pack-uuid modelengine-core
+```
+
+서로 다른 Microsoft visual 세션 두 개가 있으면 같은 시점을 1인칭 actor와 3인칭 observer에서 동시에 캡처합니다. 요청 시작 시각 차이는 `captureSkewMs`로 반환됩니다. 조건이 부족하면 `ACTOR_CAPABILITY_UNAVAILABLE`로 실패합니다.
+
+```powershell
+minecraft-cli --compact --json actor capture-pair model-actor `
+  --observer model-observer --label sword-motion `
+  --actor-perspective first --observer-perspective third-back
 ```
 
 일반 화면과 다이얼로그는 먼저 표시 문구로 위젯을 찾아 클릭합니다. 버튼 문구가 없거나 커스텀 렌더링된 화면만 좌표를 사용합니다. 입력과 스크롤은 실제 키보드나 Windows 마우스를 건드리지 않고 Minecraft 내부로 전달됩니다.
@@ -172,7 +212,16 @@ minecraft-cli --compact --json actor actions visual1
 minecraft-cli --compact --json actor click-action visual1 --action-id button:2
 ```
 
+1.21.11 native Dialog에서는 중첩 layout의 실제 사용자 버튼이 안내 버튼보다 먼저 반환됩니다. 사용자 버튼은 `dialog:0`, `dialog:1`처럼 안정적인 action ID와 text/bounds를 가지며, `click-action`은 좌표 클릭 대신 버튼의 실제 `onPress` callback을 호출합니다. 결과의 `callbackInvoked: true`로 전송 여부를 확인할 수 있습니다.
+
+```powershell
+minecraft-cli --compact --json actor actions visual1
+minecraft-cli --compact --json actor click-action visual1 --action-id dialog:0
+```
+
 실제 회귀 예제는 `fixtures/scenarios/npc-dialog-action.json`에 있습니다.
+
+`visual state`는 지원 클라이언트의 dimension과 현재 좌표도 반환합니다. 따라서 같은 화면 클라이언트에서 NPC를 누르고 캐릭터를 선택한 뒤 마지막 위치가 복원됐는지 JSON으로 비교할 수 있습니다.
 
 화면 클라이언트는 MultiMC에 이미 로그인된 기본 계정을 그대로 사용할 수 있습니다.
 

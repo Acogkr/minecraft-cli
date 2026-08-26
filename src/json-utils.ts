@@ -53,6 +53,15 @@ export function interpolateString(input: string, variables: Record<string, unkno
   return input.replace(/\$\{([a-zA-Z_][a-zA-Z0-9_.-]*)\}/g, (_match, name) => stringifyVariable(resolveVariable(variables, name)));
 }
 
+export function interpolateValue(input: unknown, variables: Record<string, unknown>) {
+  if (typeof input !== "string") return input;
+  const exact = input.match(/^\$\{([a-zA-Z_][a-zA-Z0-9_.-]*)\}$/);
+  if (!exact) return interpolateString(input, variables);
+  const value = resolveVariable(variables, exact[1]);
+  if (value === undefined) throw new MinecraftCliError("SCENARIO_VARIABLE_MISSING", "Scenario variable selector returned no value.", 400);
+  return value;
+}
+
 function resolveVariable(variables: Record<string, unknown>, name: string) {
   const [root, ...rest] = name.split(".");
   if (!(root in variables)) throw new MinecraftCliError("SCENARIO_VARIABLE_MISSING", `Scenario variable '${root}' is not defined.`, 400);

@@ -3,7 +3,7 @@ import crypto from "node:crypto";
 import fs from "node:fs";
 import path from "node:path";
 import { MinecraftCliError } from "./errors";
-import { evaluateAssertions, interpolateString, redactSecrets, selectJson, type JsonAssertion } from "./json-utils";
+import { evaluateAssertions, interpolateString, interpolateValue, redactSecrets, selectJson, type JsonAssertion } from "./json-utils";
 
 type StepCondition = "success" | "failure" | "always";
 
@@ -360,7 +360,7 @@ async function executeV2Action(options: ScenarioOptions, step: ValidV2Action, va
       const response = parseResponse(child.stdout, child.stderr, child.error);
       const resolvedVariables = { ...variables, repeatIndex: repetition, attemptIndex: attempt };
       const assertions = (step.assertions ?? step.assert ?? []).map(assertion => Object.fromEntries(
-        Object.entries(assertion).map(([key, value]) => [key, typeof value === "string" && !["path", "selector", "matches"].includes(key) ? interpolateString(value, resolvedVariables) : value])
+        Object.entries(assertion).map(([key, value]) => [key, ["path", "selector"].includes(key) ? value : interpolateValue(value, resolvedVariables)])
       ));
       const assertionFailures = child.status === 0 && response?.ok === true ? evaluateAssertions(response, assertions) : [];
       const passed = child.status === 0 && response?.ok === true && assertionFailures.length === 0;
