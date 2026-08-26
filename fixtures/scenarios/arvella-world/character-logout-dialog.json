@@ -1,0 +1,46 @@
+{
+  "version": 2,
+  "name": "arvella-character-logout-dialog",
+  "variables": {
+    "actor": "arvella-visual",
+    "logoutCommand": "/character logout",
+    "saveButtonText": "저장하고 로그아웃"
+  },
+  "steps": [
+    {
+      "name": "require-native-dialog-actions",
+      "args": ["actor", "capabilities", "${actor}"],
+      "assertions": [
+        { "path": "$.data.capabilities.nativeDialog.available", "equals": true },
+        { "path": "$.data.capabilities.screenActions.available", "equals": true }
+      ]
+    },
+    { "name": "open-logout-command", "args": ["visual", "open-chat", "${actor}"] },
+    { "name": "type-logout-command", "args": ["visual", "type-text", "${actor}", "${logoutCommand}"] },
+    { "name": "run-logout-command", "args": ["visual", "press-key", "${actor}", "enter"] },
+    {
+      "name": "read-logout-actions",
+      "args": ["actor", "actions", "${actor}"],
+      "retry": 5,
+      "retryDelayMs": 300,
+      "assertions": [
+        { "path": "$.data.nativeDialog", "equals": true },
+        { "path": "$.data.result.title", "contains": "캐릭터 로그아웃" },
+        { "path": "$.data.result.actions[0].text", "contains": "${saveButtonText}" },
+        { "path": "$.data.result.actions[0].dialogUserAction", "equals": true },
+        { "path": "$.data.result.actions[0].source", "equals": "dialog-layout" }
+      ],
+      "capture": { "saveActionId": "$.data.result.actions[0].actionId" }
+    },
+    { "name": "capture-logout-dialog", "args": ["visual", "screenshot", "${actor}", "--label", "character-logout-dialog", "--region", "dialog", "--no-compare"] },
+    {
+      "name": "save-and-logout",
+      "args": ["actor", "click-action", "${actor}", "--action-id", "${saveActionId}"],
+      "assertions": [
+        { "path": "$.data.result.handled", "equals": true },
+        { "path": "$.data.result.callbackInvoked", "equals": true },
+        { "path": "$.data.result.action.text", "contains": "${saveButtonText}" }
+      ]
+    }
+  ]
+}

@@ -1,0 +1,100 @@
+{
+  "version": 2,
+  "name": "arvella-world-textdisplay-camera",
+  "variables": {
+    "actor": "arvella-world-camera",
+    "warpText": "스폰 뒷편",
+    "warpButtonText": "이동",
+    "framebufferWidth": 960,
+    "framebufferHeight": 540,
+    "guiScale": 2,
+    "fov": 70,
+    "minPixelHeight": 12,
+    "maxPixelHeight": 32,
+    "maxAngularMiss": 20
+  },
+  "steps": [
+    {
+      "name": "require-world-camera-capabilities",
+      "args": ["actor", "capabilities", "${actor}"],
+      "assertions": [
+        { "path": "$.data.capabilities.textDisplayTargeting.available", "equals": true },
+        { "path": "$.data.capabilities.perspective.available", "equals": true },
+        { "path": "$.data.capabilities.nativeDialog.available", "equals": true }
+      ]
+    },
+    {
+      "name": "verify-render-settings",
+      "args": ["visual", "state", "${actor}"],
+      "assertions": [
+        { "path": "$.data.framebufferWidth", "equals": "${framebufferWidth}" },
+        { "path": "$.data.framebufferHeight", "equals": "${framebufferHeight}" },
+        { "path": "$.data.configuredGuiScale", "equals": "${guiScale}" },
+        { "path": "$.data.fov", "equals": "${fov}" }
+      ]
+    },
+    {
+      "name": "set-first-person",
+      "args": ["visual", "perspective", "${actor}", "--mode", "first"],
+      "assertions": [{ "path": "$.data.perspective", "equals": "first" }]
+    },
+    {
+      "name": "read-warp-label",
+      "args": ["visual", "text-displays", "${actor}", "--text", "${warpText}"],
+      "assertions": [
+        { "path": "$.data.count", "gte": 1 },
+        { "path": "$.data.textDisplays[0].textDisplay.visible", "equals": true },
+        { "path": "$.data.textDisplays[0].textDisplay.screenBounds.pixelHeight", "gte": "${minPixelHeight}" },
+        { "path": "$.data.textDisplays[0].textDisplay.screenBounds.pixelHeight", "lte": "${maxPixelHeight}" },
+        { "path": "$.data.textDisplays[0].textDisplay.angularErrorDegrees", "lte": "${maxAngularMiss}" },
+        { "path": "$.data.textDisplays[0].textDisplay.selectionConeDegrees", "gt": 0 },
+        { "path": "$.data.textDisplays[0].textDisplay.viewRange", "gt": 0 }
+      ],
+      "capture": {
+        "labelPixelHeight": "$.data.textDisplays[0].textDisplay.screenBounds.pixelHeight",
+        "labelPixelWidth": "$.data.textDisplays[0].textDisplay.screenBounds.pixelWidth",
+        "labelAngularMiss": "$.data.textDisplays[0].textDisplay.angularErrorDegrees",
+        "labelSelectionCone": "$.data.textDisplays[0].textDisplay.selectionConeDegrees"
+      }
+    },
+    {
+      "name": "aim-click-warp-label",
+      "args": ["actor", "aim-text", "${actor}", "--text", "${warpText}", "--max-angular-miss", "${maxAngularMiss}", "--min-pixel-height", "${minPixelHeight}", "--max-pixel-height", "${maxPixelHeight}", "--expect-dialog"],
+      "assertions": [
+        { "path": "$.data.result.target.textDisplay.text", "contains": "${warpText}" },
+        { "path": "$.data.result.beforeAim.angularErrorDegrees", "lte": "${maxAngularMiss}" },
+        { "path": "$.data.result.beforeAim.selectionConeDegrees", "gt": 0 },
+        { "path": "$.data.dialogOpened", "equals": true }
+      ]
+    },
+    {
+      "name": "verify-dialog-actions",
+      "args": ["actor", "actions", "${actor}"],
+      "assertions": [
+        { "path": "$.data.nativeDialog", "equals": true },
+        { "path": "$.data.result.actions[0].actionId", "exists": true },
+        { "path": "$.data.result.actions[0].text", "contains": "${warpButtonText}" },
+        { "path": "$.data.result.actions[0].dialogUserAction", "equals": true }
+      ],
+      "capture": { "warpActionId": "$.data.result.actions[0].actionId" }
+    },
+    {
+      "name": "capture-dialog",
+      "args": ["visual", "screenshot", "${actor}", "--label", "world-warp-dialog", "--region", "dialog", "--no-compare"]
+    },
+    {
+      "name": "click-warp-action",
+      "args": ["actor", "click-action", "${actor}", "--action-id", "${warpActionId}"],
+      "assertions": [
+        { "path": "$.data.result.handled", "equals": true },
+        { "path": "$.data.result.callbackInvoked", "equals": true }
+      ]
+    },
+    {
+      "name": "close-dialog",
+      "args": ["visual", "close-screen", "${actor}"],
+      "when": "always",
+      "allowFailure": true
+    }
+  ]
+}

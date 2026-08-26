@@ -1,0 +1,69 @@
+{
+  "version": 2,
+  "name": "arvella-job-restricted-quest",
+  "variables": {
+    "actor": "arvella-e2e",
+    "questNpcRole": "Quest NPC",
+    "questListTitle": "퀘스트",
+    "restrictedQuestName": "직업 제한 퀘스트",
+    "requiredJobLore": "요구 직업",
+    "questDetailTitle": "퀘스트 상세",
+    "acceptItemName": "수락",
+    "acceptedText": "퀘스트를 수락",
+    "completionTriggerCommand": "arvella-e2e quest-complete",
+    "completedText": "퀘스트를 완료"
+  },
+  "steps": [
+    {
+      "name": "require-npc-interaction",
+      "args": ["actor", "capabilities", "${actor}"],
+      "assertions": [
+        { "path": "$.data.capabilities.npcRoleInteraction.available", "equals": true }
+      ]
+    },
+    {
+      "name": "clear-observations",
+      "args": ["session", "clear-events", "${actor}"]
+    },
+    {
+      "name": "interact-with-quest-npc",
+      "args": ["actor", "interact-role", "${actor}", "--role", "${questNpcRole}", "--max-distance", "8"],
+      "retry": 5,
+      "retryDelayMs": 500
+    },
+    {
+      "name": "verify-restricted-quest-is-listed",
+      "args": ["session", "expect-window", "${actor}", "--title-contains", "${questListTitle}", "--name", "${restrictedQuestName}", "--lore", "${requiredJobLore}", "--timeout-ticks", "100"]
+    },
+    {
+      "name": "open-restricted-quest",
+      "args": ["session", "click-item", "${actor}", "--title-contains", "${questListTitle}", "--name", "${restrictedQuestName}", "--lore", "${requiredJobLore}", "--ticks", "10"]
+    },
+    {
+      "name": "verify-quest-detail",
+      "args": ["session", "expect-window", "${actor}", "--title-contains", "${questDetailTitle}", "--name", "${acceptItemName}", "--timeout-ticks", "100"]
+    },
+    {
+      "name": "accept-quest",
+      "args": ["session", "click-item", "${actor}", "--title-contains", "${questDetailTitle}", "--name", "${acceptItemName}", "--ticks", "10"]
+    },
+    {
+      "name": "verify-quest-accepted",
+      "args": ["session", "expect-chat", "${actor}", "--contains", "${acceptedText}", "--timeout-ticks", "100"]
+    },
+    {
+      "name": "trigger-completion-fixture",
+      "args": ["session", "command", "${actor}", "${completionTriggerCommand}"]
+    },
+    {
+      "name": "verify-quest-completed",
+      "args": ["session", "expect-chat", "${actor}", "--contains", "${completedText}", "--timeout-ticks", "100"]
+    },
+    {
+      "name": "close-quest-window",
+      "args": ["session", "close-window", "${actor}", "--ticks", "5"],
+      "when": "always",
+      "allowFailure": true
+    }
+  ]
+}

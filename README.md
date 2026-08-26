@@ -223,6 +223,8 @@ minecraft-cli --compact --json actor click-action visual1 --action-id dialog:0
 
 `visual state`는 지원 클라이언트의 dimension과 현재 좌표도 반환합니다. 따라서 같은 화면 클라이언트에서 NPC를 누르고 캐릭터를 선택한 뒤 마지막 위치가 복원됐는지 JSON으로 비교할 수 있습니다.
 
+Arvella 개발용 시나리오와 필요한 capability는 `fixtures/scenarios/arvella`와 `fixtures/scenarios/arvella-world`에 분리되어 있습니다. 이 파일들은 `codex/arvella-dev` 브랜치에서만 관리합니다.
+
 화면 클라이언트는 MultiMC에 이미 로그인된 기본 계정을 그대로 사용할 수 있습니다.
 
 ```powershell
@@ -358,3 +360,4 @@ minecraft-cli --compact --json artifacts prune --older-than-days 30 --apply
 - [시나리오 예제](docs/scenario.example.json)
 - [구현 구조](docs/architecture.md)
 - [검증 결과](docs/visual-validation-report.md)
+- [Arvella World와 ModelEngine 검증](docs/world-camera-e2e.md)

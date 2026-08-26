@@ -1,0 +1,53 @@
+{
+  "version": 2,
+  "name": "arvella-modelengine-pack-on",
+  "variables": {
+    "host": "play.example.com",
+    "port": 25565,
+    "version": "1.21.11",
+    "actor": "arvella-model-actor-on",
+    "observer": "arvella-model-observer-on",
+    "actorProfile": "ActorMinecraftName",
+    "observerProfile": "ObserverMinecraftName",
+    "resourcePackZip": "C:/path/to/modelengine-core-shader.zip",
+    "packUuid": "arvella-modelengine-core",
+    "motionCommand": "/modelengine-test sword"
+  },
+  "steps": [
+    {
+      "name": "launch-with-core-pack",
+      "parallel": [
+        { "name": "launch-actor", "args": ["visual", "launch", "${actor}", "--auth", "microsoft", "--profile", "${actorProfile}", "--host", "${host}", "--port", "${port}", "--version", "${version}", "--width", "960", "--height", "540", "--gui-scale", "2", "--fov", "70", "--resource-pack", "${resourcePackZip}", "--pack-uuid", "${packUuid}"] },
+        { "name": "launch-observer", "args": ["visual", "launch", "${observer}", "--auth", "microsoft", "--profile", "${observerProfile}", "--host", "${host}", "--port", "${port}", "--version", "${version}", "--width", "960", "--height", "540", "--gui-scale", "2", "--fov", "70", "--resource-pack", "${resourcePackZip}", "--pack-uuid", "${packUuid}"] }
+      ]
+    },
+    {
+      "name": "verify-pack-active",
+      "parallel": [
+        { "name": "actor-pack", "args": ["visual", "state", "${actor}"], "assertions": [{ "path": "$.data.managedResourcePack.uuid", "equals": "${packUuid}" }, { "path": "$.data.managedResourcePack.status", "equals": "active" }] },
+        { "name": "observer-pack", "args": ["visual", "state", "${observer}"], "assertions": [{ "path": "$.data.managedResourcePack.uuid", "equals": "${packUuid}" }, { "path": "$.data.managedResourcePack.status", "equals": "active" }] }
+      ]
+    },
+    { "name": "open-motion-command", "args": ["visual", "open-chat", "${actor}"] },
+    { "name": "type-motion-command", "args": ["visual", "type-text", "${actor}", "${motionCommand}"] },
+    { "name": "run-motion-command", "args": ["visual", "press-key", "${actor}", "enter"] },
+    {
+      "name": "capture-packed-motion",
+      "args": ["actor", "capture-pair", "${actor}", "--observer", "${observer}", "--label", "modelengine-pack-on", "--actor-perspective", "first", "--observer-perspective", "third-back"],
+      "assertions": [
+        { "path": "$.data.capability", "equals": "dualVisualCapture" },
+        { "path": "$.data.captureSkewMs", "lte": 100 },
+        { "path": "$.data.actor.file", "exists": true },
+        { "path": "$.data.observer.file", "exists": true }
+      ]
+    },
+    {
+      "name": "stop-packed-sessions-and-restore",
+      "when": "always",
+      "parallel": [
+        { "name": "stop-actor", "args": ["visual", "stop", "${actor}"], "allowFailure": true },
+        { "name": "stop-observer", "args": ["visual", "stop", "${observer}"], "allowFailure": true }
+      ]
+    }
+  ]
+}

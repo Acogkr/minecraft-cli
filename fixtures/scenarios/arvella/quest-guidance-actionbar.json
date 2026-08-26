@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "name": "arvella-quest-guidance-actionbar",
+  "variables": {
+    "actor": "arvella-e2e",
+    "questNpcRole": "Quest NPC",
+    "questListTitle": "퀘스트",
+    "questName": "길안내 퀘스트",
+    "guidanceItemName": "길안내",
+    "guidanceText": "목표"
+  },
+  "steps": [
+    {
+      "name": "capture-event-cursor",
+      "args": ["session", "events", "${actor}", "--limit", "1"],
+      "capture": {
+        "eventCursor": "$.data.nextSequence"
+      }
+    },
+    {
+      "name": "interact-with-quest-npc",
+      "args": ["actor", "interact-role", "${actor}", "--role", "${questNpcRole}", "--max-distance", "8"],
+      "retry": 5,
+      "retryDelayMs": 500
+    },
+    {
+      "name": "open-guidance-quest",
+      "args": ["session", "click-item", "${actor}", "--title-contains", "${questListTitle}", "--name", "${questName}", "--ticks", "10"]
+    },
+    {
+      "name": "start-guidance",
+      "args": ["session", "click-item", "${actor}", "--name", "${guidanceItemName}", "--ticks", "10"]
+    },
+    {
+      "name": "verify-guidance-actionbar",
+      "args": ["session", "expect-event", "${actor}", "--type", "action_bar", "--contains", "${guidanceText}", "--after", "${eventCursor}", "--timeout-ticks", "120"]
+    },
+    {
+      "name": "capture-guidance-hud",
+      "args": ["session", "state", "${actor}", "--part", "hud"],
+      "assertions": [
+        { "path": "$.data.events", "exists": true }
+      ]
+    },
+    {
+      "name": "close-quest-window",
+      "args": ["session", "close-window", "${actor}", "--ticks", "5"],
+      "when": "always",
+      "allowFailure": true
+    }
+  ]
+}

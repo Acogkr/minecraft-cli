@@ -1,0 +1,78 @@
+{
+  "version": 2,
+  "name": "arvella-character-last-location",
+  "variables": {
+    "actor": "arvella-character-visual",
+    "characterNpcRole": "Character NPC",
+    "characterActionIndex": 0
+  },
+  "steps": [
+    {
+      "name": "require-character-capabilities",
+      "args": ["actor", "capabilities", "${actor}"],
+      "assertions": [
+        { "path": "$.data.capabilities.npcRoleInteraction.available", "equals": true },
+        { "path": "$.data.capabilities.nativeDialog.available", "equals": true },
+        { "path": "$.data.transports.visual.capabilities.worldPosition", "equals": true }
+      ]
+    },
+    {
+      "name": "capture-last-location",
+      "args": ["visual", "state", "${actor}"],
+      "assertions": [
+        { "path": "$.data.connected", "equals": true },
+        { "path": "$.data.location", "exists": true }
+      ],
+      "capture": {
+        "lastDimension": "$.data.location.dimension",
+        "lastX": "$.data.location.x",
+        "lastY": "$.data.location.y",
+        "lastZ": "$.data.location.z"
+      }
+    },
+    {
+      "name": "interact-with-character-npc",
+      "args": ["actor", "interact-role", "${actor}", "--role", "${characterNpcRole}", "--max-distance", "8"],
+      "retry": 5,
+      "retryDelayMs": 500,
+      "assertions": [
+        { "path": "$.data.transport", "equals": "visual" }
+      ]
+    },
+    {
+      "name": "verify-character-dialog",
+      "args": ["actor", "actions", "${actor}"],
+      "assertions": [
+        { "path": "$.data.nativeDialog", "equals": true },
+        { "path": "$.data.result.actions[0].actionId", "exists": true }
+      ]
+    },
+    {
+      "name": "select-character",
+      "args": ["actor", "click-action", "${actor}", "--index", "${characterActionIndex}"],
+      "assertions": [
+        { "path": "$.data.result.handled", "equals": true }
+      ]
+    },
+    {
+      "name": "verify-last-location-restored",
+      "args": ["visual", "state", "${actor}"],
+      "retry": 5,
+      "retryDelayMs": 1000,
+      "assertions": [
+        { "path": "$.data.connected", "equals": true },
+        { "path": "$.data.screen", "equals": "game" },
+        { "path": "$.data.location.dimension", "equals": "${lastDimension}" },
+        { "path": "$.data.location.x", "equals": "${lastX}" },
+        { "path": "$.data.location.y", "equals": "${lastY}" },
+        { "path": "$.data.location.z", "equals": "${lastZ}" }
+      ]
+    },
+    {
+      "name": "close-character-dialog",
+      "args": ["visual", "close-screen", "${actor}"],
+      "when": "always",
+      "allowFailure": true
+    }
+  ]
+}

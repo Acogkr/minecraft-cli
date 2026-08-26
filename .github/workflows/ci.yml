@@ -17,6 +17,7 @@ jobs:
       - run: npm run build
       - run: npm run test:auth
       - run: npm run test:artifacts
+      - run: npm run test:arvella-drafts
       - run: npm run test:checkpoint
       - run: npm run test:daemon-lifecycle
       - run: npm run test:event-cursor

@@ -18,6 +18,7 @@
     "fixtures/scenarios",
     "scripts/auth-smoke.mjs",
     "scripts/artifacts-smoke.mjs",
+    "scripts/arvella-scenario-draft-smoke.mjs",
     "scripts/checkpoint-smoke.mjs",
     "scripts/client-settings-1.21.11-smoke.mjs",
     "scripts/daemon-lifecycle-smoke.mjs",
@@ -26,6 +27,7 @@
     "scripts/install-skill.mjs",
     "scripts/image-diff-smoke.mjs",
     "scripts/scenario-smoke.mjs",
+    "scripts/velocity-transfer-1.21.11-e2e.mjs",
     "scripts/visual-entity-interaction-smoke.mjs",
     "scripts/visual-world-camera-smoke.mjs",
     "scripts/visual-lifecycle-smoke.mjs",
@@ -42,6 +44,7 @@
     "test:smoke": "npm run test:daemon-lifecycle",
     "test:auth": "node scripts/auth-smoke.mjs",
     "test:artifacts": "node scripts/artifacts-smoke.mjs",
+    "test:arvella-drafts": "node scripts/arvella-scenario-draft-smoke.mjs",
     "test:checkpoint": "node scripts/checkpoint-smoke.mjs",
     "test:client-settings": "node scripts/client-settings-1.21.11-smoke.mjs",
     "test:daemon-lifecycle": "node scripts/daemon-lifecycle-smoke.mjs",
@@ -51,6 +54,7 @@
     "test:visual-entity-interaction": "node scripts/visual-entity-interaction-smoke.mjs",
     "test:visual-world-camera": "node scripts/visual-world-camera-smoke.mjs",
     "test:visual-lifecycle": "node scripts/visual-lifecycle-smoke.mjs",
+    "test:e2e:velocity-transfer": "node scripts/velocity-transfer-1.21.11-e2e.mjs",
     "test:e2e:paper": "node scripts/e2e-paper.mjs"
   },
   "dependencies": {

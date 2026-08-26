@@ -1,0 +1,49 @@
+{
+  "version": 2,
+  "name": "arvella-npc-shop-open",
+  "variables": {
+    "actor": "arvella-e2e",
+    "shopNpcRole": "Shop NPC",
+    "shopTitle": "상점"
+  },
+  "steps": [
+    {
+      "name": "require-npc-interaction",
+      "args": ["actor", "capabilities", "${actor}"],
+      "assertions": [
+        { "path": "$.data.capabilities.npcRoleInteraction.available", "equals": true }
+      ]
+    },
+    {
+      "name": "clear-observations",
+      "args": ["session", "clear-events", "${actor}"]
+    },
+    {
+      "name": "interact-with-shop-npc",
+      "args": ["actor", "interact-role", "${actor}", "--role", "${shopNpcRole}", "--max-distance", "8"],
+      "retry": 5,
+      "retryDelayMs": 500,
+      "assertions": [
+        { "path": "$.data.transport", "matches": "^(headless|visual)$" }
+      ]
+    },
+    {
+      "name": "verify-shop-window",
+      "args": ["session", "expect-window", "${actor}", "--title-contains", "${shopTitle}", "--timeout-ticks", "100"]
+    },
+    {
+      "name": "capture-shop-window",
+      "args": ["session", "state", "${actor}", "--part", "window"],
+      "assertions": [
+        { "path": "$.data.openWindow", "exists": true },
+        { "path": "$.data.openWindow.title", "contains": "${shopTitle}" }
+      ]
+    },
+    {
+      "name": "close-shop-window",
+      "args": ["session", "close-window", "${actor}", "--ticks", "5"],
+      "when": "always",
+      "allowFailure": true
+    }
+  ]
+}

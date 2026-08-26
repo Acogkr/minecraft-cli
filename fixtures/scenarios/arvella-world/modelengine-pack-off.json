@@ -1,0 +1,52 @@
+{
+  "version": 2,
+  "name": "arvella-modelengine-pack-off",
+  "variables": {
+    "host": "play.example.com",
+    "port": 25565,
+    "version": "1.21.11",
+    "actor": "arvella-model-actor-off",
+    "observer": "arvella-model-observer-off",
+    "actorProfile": "ActorMinecraftName",
+    "observerProfile": "ObserverMinecraftName",
+    "motionCommand": "/modelengine-test sword"
+  },
+  "steps": [
+    {
+      "name": "launch-without-core-pack",
+      "parallel": [
+        { "name": "launch-actor", "args": ["visual", "launch", "${actor}", "--auth", "microsoft", "--profile", "${actorProfile}", "--host", "${host}", "--port", "${port}", "--version", "${version}", "--width", "960", "--height", "540", "--gui-scale", "2", "--fov", "70"] },
+        { "name": "launch-observer", "args": ["visual", "launch", "${observer}", "--auth", "microsoft", "--profile", "${observerProfile}", "--host", "${host}", "--port", "${port}", "--version", "${version}", "--width", "960", "--height", "540", "--gui-scale", "2", "--fov", "70"] }
+      ]
+    },
+    {
+      "name": "verify-pack-absent",
+      "args": ["visual", "state", "${actor}"],
+      "assertions": [
+        { "path": "$.data.connected", "equals": true },
+        { "path": "$.data.managedResourcePack", "exists": false }
+      ]
+    },
+    { "name": "open-motion-command", "args": ["visual", "open-chat", "${actor}"] },
+    { "name": "type-motion-command", "args": ["visual", "type-text", "${actor}", "${motionCommand}"] },
+    { "name": "run-motion-command", "args": ["visual", "press-key", "${actor}", "enter"] },
+    {
+      "name": "capture-unpacked-motion",
+      "args": ["actor", "capture-pair", "${actor}", "--observer", "${observer}", "--label", "modelengine-pack-off", "--actor-perspective", "first", "--observer-perspective", "third-back"],
+      "assertions": [
+        { "path": "$.data.capability", "equals": "dualVisualCapture" },
+        { "path": "$.data.captureSkewMs", "lte": 100 },
+        { "path": "$.data.actor.file", "exists": true },
+        { "path": "$.data.observer.file", "exists": true }
+      ]
+    },
+    {
+      "name": "stop-unpacked-sessions",
+      "when": "always",
+      "parallel": [
+        { "name": "stop-actor", "args": ["visual", "stop", "${actor}"], "allowFailure": true },
+        { "name": "stop-observer", "args": ["visual", "stop", "${observer}"], "allowFailure": true }
+      ]
+    }
+  ]
+}
